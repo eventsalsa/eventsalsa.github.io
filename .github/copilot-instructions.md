@@ -1,0 +1,19 @@
+# eventsalsa docs repository instructions
+
+- This repository is the website and documentation home for **eventsalsa**, an event sourcing bundle in Go.
+- The current product surface is:
+  - `eventsalsa/store`: append-only event store
+  - `eventsalsa/worker`: async consumers and projections
+  - `eventsalsa/encryption`: envelope encryption for PII and secrets, crypto-shredding for GDPR compliance, and HMAC hashing for sensitive lookups
+- Do not use secondary design exports as product truth for content or information architecture.
+- The site stack is **Astro + Starlight**. Custom website pages belong in `src/pages/`. Documentation content belongs in `src/content/docs/`.
+- Keep early scaffolding and placeholders intentionally conservative. If authoritative product details are missing, leave a neutral placeholder instead of inventing APIs, guarantees, or workflows.
+- When changing documentation navigation, keep routes and sidebar labels straightforward and stable.
+- Use semantic HTML, accessible copy, and static-first Astro patterns for website work.
+- Validate changes with the existing project commands from the repository root:
+  - `npm install`
+  - `npm run dev`
+  - `npm run build`
+- **Commit messages must use conventional commits**. Format the first line as `type(scope): summary`.
+- **Every commit message must include a blank line followed by a fuller explanatory body**. Do not use subject-only commit messages in this repository.
+- Prefer the project agents and skills in `.github/agents` and `.github/skills` when they match the task instead of re-deriving repository conventions from scratch.

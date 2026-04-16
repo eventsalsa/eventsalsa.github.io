@@ -1,0 +1,867 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+const baseUrl = import.meta.env.BASE_URL;
+const documentationHref = `${baseUrl}documentation/`;
+const changelogHref = `${baseUrl}documentation/project/changelog/`;
+const githubHref = 'https://github.com/eventsalsa/docs';
+
+const featureCards = [
+	{
+		name: 'eventsalsa/store',
+		icon: 'database',
+		tone: 'primary',
+		description:
+			'Append-only event storage with optimistic concurrency and a transaction-first API.',
+		tags: ['PostgreSQL-backed', 'Append-only', 'Optimistic concurrency'],
+	},
+	{
+		name: 'eventsalsa/worker',
+		icon: 'hub',
+		tone: 'tertiary',
+		description:
+			'Run async consumers and projections across one or more worker processes, with PostgreSQL-backed assignments rebalanced as workers join.',
+	},
+	{
+		name: 'eventsalsa/encryption',
+		icon: 'lock',
+		tone: 'secondary',
+		description:
+			'Standalone envelope encryption for PII and secrets, with crypto-shredding and HMAC hashing for sensitive lookups.',
+	},
+];
+
+const benefits = [
+	{
+		icon: 'extension',
+		title: 'Component-based',
+		description:
+			'Use only the modules you need. The store, worker, and encryption packages can be adopted independently.',
+	},
+	{
+		icon: 'account_tree',
+		title: 'No infrastructure creep',
+		description:
+			'eventsalsa does not require aggregate root base types or framework-owned structs in your domain model.',
+	},
+	{
+		icon: 'sync_alt',
+		title: 'Optimistic concurrency',
+		description:
+			'Expected versions make concurrent writes explicit and keep aggregate updates honest.',
+	},
+	{
+		icon: 'database',
+		title: 'PostgreSQL-driven',
+		description:
+			'The event store and worker runtime are designed around PostgreSQL so storage and processing stay close together.',
+	},
+	{
+		icon: 'view_quilt',
+		title: 'Clean architecture',
+		description:
+			'Keep event infrastructure at the edges while the application model remains plain Go.',
+	},
+];
+
+const codeLines = [
+	`<span class="token-keyword">import</span> (`,
+	`  <span class="token-string">"time"</span>`,
+	`  <span class="token-string">"github.com/eventsalsa/store"</span>`,
+	`  <span class="token-string">"github.com/eventsalsa/store/postgres"</span>`,
+	`  <span class="token-string">"github.com/google/uuid"</span>`,
+	`)`,
+	``,
+	`s := postgres.<span class="token-function">NewStore</span>(postgres.<span class="token-function">DefaultStoreConfig</span>())`,
+	``,
+	`event := store.Event{`,
+	`  AggregateType: <span class="token-string">"User"</span>,`,
+	`  AggregateID: userID,`,
+	`  EventID: uuid.<span class="token-function">New</span>(),`,
+	`  EventType: <span class="token-string">"UserRegistered"</span>,`,
+	`  EventVersion: <span class="token-number">1</span>,`,
+	`  Payload: payload,`,
+	`  Metadata: []byte(<span class="token-string">\`{}\`</span>),`,
+	`  CreatedAt: time.<span class="token-function">Now</span>(),`,
+	`}`,
+	``,
+	`<span class="token-keyword">if</span> _, err := s.<span class="token-function">Append</span>(ctx, tx, store.<span class="token-function">NoStream</span>(), []store.Event{event}); err != <span class="token-keyword">nil</span> {`,
+	`  <span class="token-keyword">return</span> err`,
+	`}`,
+];
+---
+
+<SiteLayout title="eventsalsa">
+	<header class="topbar">
+		<div class="topbar-inner">
+			<div class="topbar-left">
+				<a class="brand brand-font" href={baseUrl}>eventsalsa</a>
+				<nav class="desktop-nav" aria-label="Primary">
+					<a href={documentationHref}>Documentation</a>
+					<a href={changelogHref}>Changelog</a>
+					<a href={githubHref}>GitHub</a>
+				</nav>
+			</div>
+			<div class="topbar-actions">
+				<a class="search-pill" href={documentationHref}>
+					<span class="material-symbols-outlined">search</span>
+					<span>Browse docs</span>
+				</a>
+				<button class="theme-toggle" data-theme-toggle type="button">
+					<span class="material-symbols-outlined" data-theme-icon>light_mode</span>
+				</button>
+			</div>
+		</div>
+	</header>
+
+	<main class="home-page">
+		<section class="hero-band">
+			<div class="hero-glow hero-glow--primary"></div>
+			<div class="hero-glow hero-glow--tertiary"></div>
+			<div class="hero-section">
+				<div class="hero-content">
+					<h1>
+						Clean Event Sourcing for <span>Go</span>
+					</h1>
+					<p class="hero-copy">
+						eventsalsa is a bundle of Go modules for event sourcing: an append-only event store,
+						a scalable PostgreSQL-native worker runtime for async consumers and projections, and a
+						standalone encryption module for PII and secrets. It is Postgres-driven and stays out
+						of your domain model.
+					</p>
+					<div class="hero-actions">
+						<a class="button button--primary" href={documentationHref}>Open documentation</a>
+						<a class="button button--secondary" href={githubHref}>View GitHub</a>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<section class="section-band section-band--components">
+			<div class="section">
+				<div class="section-heading">
+					<h2>Components</h2>
+					<p>Build around the pieces you need today and grow into the rest when the system demands it.</p>
+				</div>
+				<div class="feature-grid">
+					{
+						featureCards.map((card) => (
+							<article class="feature-card">
+								<div class={`icon-chip icon-chip--${card.tone}`}>
+									<span class="material-symbols-outlined">{card.icon}</span>
+								</div>
+								<h3>{card.name}</h3>
+								<p>{card.description}</p>
+								{card.tags && (
+									<ul class="feature-tags" aria-label={`${card.name} highlights`}>
+										{card.tags.map((tag) => (
+											<li>{tag}</li>
+										))}
+									</ul>
+								)}
+							</article>
+						))
+					}
+				</div>
+			</div>
+		</section>
+
+		<section class="section-band section-band--benefits">
+			<div class="section">
+				<div class="section-heading">
+					<h2>Why eventsalsa?</h2>
+					<p>Keep the architecture explicit, the runtime PostgreSQL-native, and the domain model free of framework ownership.</p>
+				</div>
+				<div class="benefit-grid">
+					{
+						benefits.map((benefit) => (
+							<article class="benefit-card">
+								<div class="benefit-icon">
+									<span class="material-symbols-outlined">{benefit.icon}</span>
+								</div>
+								<h3>{benefit.title}</h3>
+								<p>{benefit.description}</p>
+							</article>
+						))
+					}
+				</div>
+			</div>
+		</section>
+
+		<section class="section-band section-band--quickstart">
+			<div class="section quickstart-section">
+				<div class="quickstart-copy">
+					<div class="section-heading section-heading--compact">
+						<h2>Quickstart</h2>
+						<p>
+							<code>eventsalsa/store</code> gives you an append-only event log, optimistic
+							concurrency, and a transaction-first API without prescribing your domain model.
+						</p>
+					</div>
+					<div class="install-card">
+						<div class="install-card-header">
+							<span>Install</span>
+							<span class="material-symbols-outlined">terminal</span>
+						</div>
+						<code>go get github.com/eventsalsa/store</code>
+					</div>
+					<ul class="proof-points">
+						<li>
+							<span class="material-symbols-outlined">check</span>
+							<span>Append and read aggregate streams in a PostgreSQL-backed event store.</span>
+						</li>
+						<li>
+							<span class="material-symbols-outlined">check</span>
+							<span>Use optimistic concurrency through explicit expected versions.</span>
+						</li>
+						<li>
+							<span class="material-symbols-outlined">check</span>
+							<span>Control transaction boundaries yourself with the <code>*sql.Tx</code> you already have.</span>
+						</li>
+					</ul>
+				</div>
+				<div class="code-window" aria-label="Example store usage">
+					<div class="code-window-header">
+						<div class="window-controls" aria-hidden="true">
+							<span></span>
+							<span></span>
+							<span></span>
+						</div>
+						<span class="code-file">main.go</span>
+					</div>
+					<pre><code>{codeLines.map((line) => <span class="code-line" set:html={line} />)}</code></pre>
+				</div>
+			</div>
+		</section>
+
+		<footer class="footer-band">
+			<div class="page-footer">
+				<div class="page-footer-inner">
+					<div>
+						<div class="footer-brand brand-font">eventsalsa</div>
+						<p>Event sourcing for Go with store, worker, and encryption components.</p>
+					</div>
+					<nav aria-label="Footer">
+						<a href={documentationHref}>Documentation</a>
+						<a href={changelogHref}>Changelog</a>
+						<a href={githubHref}>GitHub</a>
+					</nav>
+				</div>
+			</div>
+		</footer>
+	</main>
+
+	<nav class="mobile-nav" aria-label="Mobile">
+		<a class="is-active" href={baseUrl}>
+			<span class="material-symbols-outlined">home</span>
+			<span>Home</span>
+		</a>
+		<a href={documentationHref}>
+			<span class="material-symbols-outlined">auto_stories</span>
+			<span>Docs</span>
+		</a>
+		<a href={changelogHref}>
+			<span class="material-symbols-outlined">update</span>
+			<span>Changelog</span>
+		</a>
+	</nav>
+</SiteLayout>
+
+<style>
+	.home-page {
+		padding-top: 4rem;
+	}
+
+	.topbar {
+		position: fixed;
+		inset: 0 0 auto;
+		z-index: 50;
+		height: 4rem;
+		background: var(--color-header-surface);
+		border-bottom: 1px solid var(--color-header-border);
+		backdrop-filter: blur(20px);
+		-webkit-backdrop-filter: blur(20px);
+	}
+
+	.topbar-inner,
+	.page-footer-inner {
+		width: 100%;
+		margin: 0 auto;
+		padding: 0 1.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.topbar-inner {
+		height: 100%;
+	}
+
+	.topbar-left,
+	.desktop-nav,
+	.topbar-actions {
+		display: flex;
+		align-items: center;
+	}
+
+	.topbar-left {
+		gap: 1.5rem;
+		min-width: 0;
+	}
+
+	.desktop-nav,
+	.topbar-actions {
+		gap: 1.25rem;
+	}
+
+	.brand {
+		text-decoration: none;
+		font-size: 1.5rem;
+		font-weight: 800;
+		letter-spacing: -0.05em;
+		color: var(--color-primary-strong);
+	}
+
+	.desktop-nav a,
+	.page-footer nav a {
+		text-decoration: none;
+		font-family: var(--font-headline);
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--color-text-muted);
+		transition: color 0.2s ease;
+	}
+
+	.desktop-nav a:hover,
+	.page-footer nav a:hover {
+		color: var(--color-primary);
+	}
+
+	.search-pill,
+	.theme-toggle,
+	.mobile-nav a {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		border: 0;
+		background: transparent;
+		color: var(--color-text-muted);
+		text-decoration: none;
+	}
+
+	.search-pill {
+		padding: 0.55rem 0.9rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-surface-highest) 45%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-outline-variant) 35%, transparent);
+		font-size: 0.8rem;
+	}
+
+	.theme-toggle {
+		padding: 0.65rem;
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			color 0.2s ease,
+			background-color 0.2s ease;
+	}
+
+	.theme-toggle:hover {
+		background: color-mix(in srgb, var(--color-surface-highest) 55%, transparent);
+		color: var(--color-primary);
+	}
+
+	.hero-band,
+	.section-band,
+	.footer-band {
+		position: relative;
+		width: 100%;
+	}
+
+	.hero-band {
+		overflow: hidden;
+		background: var(--color-background);
+	}
+
+	.section-band--components {
+		background: var(--color-surface-low);
+	}
+
+	.section-band--benefits {
+		background: var(--color-background);
+	}
+
+	.section-band--quickstart,
+	.footer-band {
+		background: var(--color-surface-low);
+	}
+
+	.hero-section,
+	.section,
+	.page-footer {
+		max-width: 80rem;
+		margin: 0 auto;
+		padding-inline: 1.5rem;
+	}
+
+	.hero-section {
+		padding-top: 5.75rem;
+		padding-bottom: 4.5rem;
+	}
+
+	.hero-content {
+		position: relative;
+		width: 100%;
+		max-width: none;
+		margin: 0 auto;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		text-align: center;
+	}
+
+	.hero-glow {
+		position: absolute;
+		border-radius: 999px;
+		filter: blur(120px);
+		pointer-events: none;
+	}
+
+	.hero-glow--primary {
+		top: 2rem;
+		left: -3rem;
+		width: 26rem;
+		height: 26rem;
+		background: color-mix(in srgb, var(--color-primary-strong) 34%, transparent);
+	}
+
+	.hero-glow--tertiary {
+		right: -4rem;
+		bottom: 1rem;
+		width: 20rem;
+		height: 20rem;
+		background: color-mix(in srgb, var(--color-tertiary-strong) 24%, transparent);
+	}
+
+	h1 {
+		margin: 0;
+		font-size: clamp(3rem, 7vw, 5.4rem);
+		line-height: 1.02;
+		letter-spacing: -0.06em;
+		color: var(--color-on-background);
+	}
+
+	h1 span {
+		color: var(--color-primary);
+	}
+
+	.hero-copy,
+	.section-heading p,
+	.feature-card p,
+	.benefit-card p,
+	.quickstart-copy p,
+	.page-footer p {
+		color: var(--color-text-muted);
+		line-height: 1.75;
+	}
+
+	.hero-copy {
+		max-width: 48rem;
+		margin: 1.35rem auto 0;
+		font-size: 1.125rem;
+	}
+
+	.hero-actions {
+		display: flex;
+		gap: 1rem;
+		flex-wrap: wrap;
+		justify-content: center;
+		margin-top: 1.9rem;
+	}
+
+	.button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 0.75rem;
+		padding: 0.95rem 1.35rem;
+		text-decoration: none;
+		font-weight: 700;
+		transition:
+			transform 0.2s ease,
+			background-color 0.2s ease,
+			color 0.2s ease;
+	}
+
+	.button:hover {
+		transform: translateY(-1px);
+	}
+
+	.button--primary {
+		background: var(--gradient-kinetic);
+		color: var(--color-on-primary);
+		box-shadow: var(--shadow-button);
+	}
+
+	.button--secondary {
+		background: var(--color-surface-container);
+		border: 1px solid color-mix(in srgb, var(--color-outline-variant) 38%, transparent);
+		color: var(--color-on-background);
+		box-shadow: var(--shadow-soft);
+	}
+
+	.section {
+		padding-top: 5rem;
+		padding-bottom: 5rem;
+	}
+
+	.section-heading {
+		max-width: 42rem;
+		margin-bottom: 1.75rem;
+	}
+
+	.section-heading h2,
+	.feature-card h3,
+	.benefit-card h3,
+	.quickstart-copy h2,
+	.footer-brand {
+		margin: 0;
+		font-family: var(--font-headline);
+		letter-spacing: -0.04em;
+	}
+
+	.section-heading h2 {
+		font-size: clamp(2rem, 4vw, 3rem);
+	}
+
+	.section-heading--compact {
+		margin-bottom: 1.25rem;
+	}
+
+	.feature-grid,
+	.benefit-grid {
+		display: grid;
+		grid-template-columns: repeat(1, minmax(0, 1fr));
+		gap: 1rem;
+	}
+
+	.feature-card,
+	.benefit-card,
+	.install-card,
+	.code-window {
+		border: 1px solid color-mix(in srgb, var(--color-outline-variant) 38%, transparent);
+		background: var(--color-surface-container);
+		box-shadow: var(--shadow-soft);
+	}
+
+	.feature-card,
+	.benefit-card {
+		padding: 1.6rem;
+		border-radius: 1.5rem;
+	}
+
+	.icon-chip,
+	.benefit-icon {
+		width: 3rem;
+		height: 3rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 1rem;
+		margin-bottom: 1rem;
+	}
+
+	.icon-chip--primary,
+	.benefit-icon {
+		background: color-mix(in srgb, var(--color-primary-strong) 15%, transparent);
+		color: var(--color-primary);
+	}
+
+	.icon-chip--tertiary {
+		background: color-mix(in srgb, var(--color-tertiary-strong) 16%, transparent);
+		color: var(--color-tertiary);
+	}
+
+	.icon-chip--secondary {
+		background: color-mix(in srgb, var(--color-secondary-soft) 24%, transparent);
+		color: var(--color-secondary);
+	}
+
+	.feature-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		padding: 0;
+		margin: 1.25rem 0 0;
+		list-style: none;
+	}
+
+	.feature-tags li {
+		padding: 0.42rem 0.72rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-surface-highest) 70%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-outline-variant) 28%, transparent);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+		color: var(--color-primary);
+	}
+
+	.quickstart-section {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 1.5rem;
+		align-items: start;
+	}
+
+	.install-card {
+		padding: 1rem 1.1rem;
+		border-radius: 1rem;
+		background: var(--color-surface-high);
+	}
+
+	.install-card-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 0.75rem;
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--color-outline);
+	}
+
+	.install-card code {
+		display: block;
+		font-size: 1rem;
+		color: var(--color-primary);
+		word-break: break-all;
+	}
+
+	.proof-points {
+		padding: 0;
+		margin: 1.5rem 0 0;
+		list-style: none;
+		display: grid;
+		gap: 1rem;
+	}
+
+	.proof-points li {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.8rem;
+		color: var(--color-text-muted);
+		line-height: 1.65;
+	}
+
+	.proof-points .material-symbols-outlined {
+		margin-top: 0.1rem;
+		color: var(--color-primary);
+	}
+
+	.code-window {
+		overflow: hidden;
+		border-radius: 1rem;
+		background: var(--color-surface-lowest);
+	}
+
+	.code-window-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.85rem 1rem;
+		background: var(--color-surface-high);
+		border-bottom: 1px solid color-mix(in srgb, var(--color-outline-variant) 38%, transparent);
+	}
+
+	.window-controls {
+		display: flex;
+		gap: 0.45rem;
+	}
+
+	.window-controls span {
+		width: 0.7rem;
+		height: 0.7rem;
+		border-radius: 999px;
+	}
+
+	.window-controls span:nth-child(1) {
+		background: #ff5f57;
+	}
+
+	.window-controls span:nth-child(2) {
+		background: #febc2e;
+	}
+
+	.window-controls span:nth-child(3) {
+		background: #28c840;
+	}
+
+	.code-file {
+		font-size: 0.75rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--color-outline);
+	}
+
+	.code-window pre {
+		margin: 0;
+		padding: 1.4rem;
+		overflow-x: auto;
+		font-size: 0.9rem;
+		line-height: 1.8;
+		color: var(--color-on-background);
+	}
+
+	.code-line {
+		display: block;
+	}
+
+	:global(.token-keyword) {
+		color: var(--color-primary);
+	}
+
+	:global(.token-string) {
+		color: var(--color-tertiary);
+	}
+
+	:global(.token-function) {
+		color: var(--color-primary-strong);
+	}
+
+	:global(.token-number) {
+		color: var(--color-secondary);
+	}
+
+	.page-footer {
+		max-width: 80rem;
+		margin: 0 auto;
+		padding: 4rem 1.5rem 6rem;
+	}
+
+	.page-footer-inner {
+		padding-block: 2rem 0;
+		border-top: 1px solid color-mix(in srgb, var(--color-outline-variant) 38%, transparent);
+		align-items: flex-start;
+	}
+
+	.page-footer p {
+		max-width: 30rem;
+		margin: 0.65rem 0 0;
+	}
+
+	.page-footer nav {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 1.25rem;
+		justify-content: flex-end;
+	}
+
+	.mobile-nav {
+		position: fixed;
+		inset: auto 0 0;
+		z-index: 55;
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		align-items: center;
+		padding: 0.65rem 0.5rem;
+		background: color-mix(in srgb, var(--color-background) 92%, transparent);
+		border-top: 1px solid color-mix(in srgb, var(--color-outline-variant) 45%, transparent);
+		backdrop-filter: blur(18px);
+		-webkit-backdrop-filter: blur(18px);
+	}
+
+	.mobile-nav a {
+		flex-direction: column;
+		padding: 0.35rem 0.2rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+	}
+
+	.mobile-nav .is-active {
+		color: var(--color-primary);
+	}
+
+	@media (min-width: 48rem) {
+		.benefit-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+
+		.quickstart-section {
+			grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+			gap: 2rem;
+		}
+	}
+
+	@media (min-width: 64rem) {
+		.hero-section,
+		.section,
+		.page-footer {
+			padding-inline: 2rem;
+		}
+
+		.feature-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
+
+		.benefit-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
+	}
+
+	@media (max-width: 63.999rem) {
+		.search-pill {
+			display: none;
+		}
+	}
+
+	@media (max-width: 47.999rem) {
+		.desktop-nav {
+			display: none;
+		}
+
+		.topbar-inner,
+		.hero-section,
+		.section,
+		.page-footer {
+			padding-inline: 1.25rem;
+		}
+
+		.topbar-left {
+			gap: 0.75rem;
+		}
+
+		h1 {
+			font-size: clamp(3rem, 12vw, 4.2rem);
+		}
+
+		.hero-section {
+			padding-top: 5rem;
+			padding-bottom: 4rem;
+		}
+
+		.page-footer-inner {
+			flex-direction: column;
+		}
+
+		.page-footer nav {
+			justify-content: flex-start;
+		}
+	}
+
+	@media (min-width: 48rem) {
+		.mobile-nav {
+			display: none;
+		}
+
+		.page-footer {
+			padding-bottom: 4rem;
+		}
+	}
+</style>

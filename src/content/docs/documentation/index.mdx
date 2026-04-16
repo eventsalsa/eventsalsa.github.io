@@ -1,0 +1,29 @@
+---
+title: eventsalsa documentation
+description: Documentation scaffold for the eventsalsa event sourcing bundle for Go.
+template: splash
+hero:
+  tagline: Minimal documentation scaffolding is in place. Guides, references, and examples can now be filled in with project-backed content.
+  actions:
+    - text: Getting started
+      link: ./getting-started/
+      icon: right-arrow
+    - text: GitHub repository
+      link: https://github.com/eventsalsa/docs
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+	<Card title="eventsalsa/store">
+		Append-only event store scaffolding lives here first as documentation structure, not final product detail.
+	</Card>
+	<Card title="eventsalsa/worker">
+		Async consumers and projection workflows can be documented incrementally without changing the site foundation.
+	</Card>
+	<Card title="eventsalsa/encryption">
+		Encryption, crypto-shredding, and sensitive lookup guidance can be added when authoritative source material is ready.
+	</Card>
+</CardGrid>

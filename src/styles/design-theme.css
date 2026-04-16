@@ -1,0 +1,217 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@700;800&family=JetBrains+Mono:wght@400;500&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap");
+
+:root {
+	--font-body: "Inter", sans-serif;
+	--font-headline: "Manrope", sans-serif;
+	--font-mono: "JetBrains Mono", monospace;
+
+	--color-primary: #5dd4ff;
+	--color-primary-strong: #00abd6;
+	--color-primary-soft: #003a4b;
+	--color-on-primary: #003545;
+	--color-secondary: #ffb3ad;
+	--color-secondary-strong: #a00015;
+	--color-secondary-soft: #ffdad7;
+	--color-tertiary: #ffb86a;
+	--color-tertiary-strong: #db8c26;
+	--color-tertiary-soft: #ffdcbc;
+	--color-background: #0e1417;
+	--color-on-background: #dee3e7;
+	--color-surface: #0e1417;
+	--color-surface-low: #171c1f;
+	--color-surface-container: #1b2023;
+	--color-surface-high: #252b2d;
+	--color-surface-highest: #303638;
+	--color-surface-lowest: #090f11;
+	--color-outline: #879299;
+	--color-outline-variant: #3d484e;
+	--color-text-muted: #bcc8cf;
+	--color-header-surface: rgba(27, 32, 35, 0.8);
+	--color-header-border: rgba(61, 72, 78, 0.3);
+	--color-sidebar-surface: #0e1417;
+	--gradient-kinetic: linear-gradient(135deg, #00abd6 0%, #5dd4ff 100%);
+	--shadow-panel: 0 24px 60px rgba(0, 0, 0, 0.3);
+	--shadow-button: 0 20px 40px rgba(0, 171, 214, 0.18);
+	--shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.18);
+	color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+	--color-primary: #006782;
+	--color-primary-strong: #00abd6;
+	--color-primary-soft: #bbeaff;
+	--color-on-primary: #ffffff;
+	--color-secondary: #930013;
+	--color-secondary-strong: #ffdad7;
+	--color-secondary-soft: #ffdad7;
+	--color-tertiary: #855100;
+	--color-tertiary-strong: #ffdcbc;
+	--color-tertiary-soft: #ffdcbc;
+	--color-background: #f5faff;
+	--color-on-background: #0e1417;
+	--color-surface: #f5faff;
+	--color-surface-low: #f0f4f7;
+	--color-surface-container: #e7edf0;
+	--color-surface-high: #e1e7ea;
+	--color-surface-highest: #dee3e7;
+	--color-surface-lowest: #ffffff;
+	--color-outline: #71787c;
+	--color-outline-variant: #c0c8cc;
+	--color-text-muted: #40484c;
+	--color-header-surface: rgba(255, 255, 255, 0.8);
+	--color-header-border: rgba(192, 200, 204, 0.5);
+	--color-sidebar-surface: #f5faff;
+	--shadow-panel: 0 22px 54px rgba(113, 120, 124, 0.14);
+	--shadow-button: 0 20px 40px rgba(0, 171, 214, 0.2);
+	--shadow-soft: 0 10px 24px rgba(113, 120, 124, 0.12);
+	color-scheme: light;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	min-height: 100%;
+}
+
+html {
+	background: var(--color-background);
+	color: var(--color-on-background);
+}
+
+body {
+	font-family: var(--font-body);
+	background: var(--color-background);
+	color: var(--color-on-background);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.brand-font {
+	font-family: var(--font-headline);
+}
+
+code,
+pre,
+.code-font {
+	font-family: var(--font-mono);
+}
+
+a {
+	color: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+	font: inherit;
+}
+
+::selection {
+	background: rgba(0, 171, 214, 0.28);
+	color: var(--color-on-background);
+}
+
+.material-symbols-outlined {
+	font-family: "Material Symbols Outlined";
+	font-style: normal;
+	font-weight: 400;
+	font-display: block;
+	font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+	line-height: 1;
+	letter-spacing: normal;
+	text-transform: none;
+	white-space: nowrap;
+	word-wrap: normal;
+	direction: ltr;
+	-webkit-font-smoothing: antialiased;
+}
+
+:root {
+	--sl-font: var(--font-body);
+	--sl-font-mono: var(--font-mono);
+	--sl-color-accent-low: var(--color-primary-soft);
+	--sl-color-accent: var(--color-primary);
+	--sl-color-accent-high: var(--color-primary);
+	--sl-color-text: var(--color-text-muted);
+	--sl-color-text-accent: var(--color-primary);
+	--sl-color-text-invert: var(--color-on-primary);
+	--sl-color-bg: var(--color-background);
+	--sl-color-bg-nav: var(--color-surface-container);
+	--sl-color-bg-sidebar: var(--color-sidebar-surface);
+	--sl-color-bg-inline-code: var(--color-surface-highest);
+	--sl-color-bg-accent: var(--color-primary);
+	--sl-color-hairline-light: var(--color-outline-variant);
+	--sl-color-hairline: var(--color-outline-variant);
+	--sl-color-hairline-shade: var(--color-background);
+	--sl-color-backdrop-overlay: rgba(14, 20, 23, 0.66);
+	--sl-color-white: var(--color-on-background);
+	--sl-color-black: var(--color-background);
+	--sl-color-gray-1: var(--color-on-background);
+	--sl-color-gray-2: var(--color-text-muted);
+	--sl-color-gray-3: var(--color-outline);
+	--sl-color-gray-4: var(--color-outline-variant);
+	--sl-color-gray-5: var(--color-surface-highest);
+	--sl-color-gray-6: var(--color-surface-high);
+	--sl-color-orange-low: var(--color-tertiary-soft);
+	--sl-color-orange: var(--color-tertiary);
+	--sl-color-orange-high: var(--color-tertiary);
+	--sl-shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.12);
+	--sl-shadow-md: var(--shadow-soft);
+	--sl-shadow-lg: var(--shadow-panel);
+}
+
+:root[data-theme='light'] {
+	--sl-color-backdrop-overlay: rgba(113, 120, 124, 0.5);
+}
+
+header.header {
+	background: var(--color-header-surface);
+	backdrop-filter: blur(20px);
+	-webkit-backdrop-filter: blur(20px);
+	border-bottom: 1px solid var(--color-header-border);
+}
+
+.site-title,
+[data-site-title] {
+	font-family: var(--font-headline);
+	font-weight: 800;
+	letter-spacing: -0.04em;
+}
+
+.sidebar-pane {
+	background: var(--color-sidebar-surface);
+}
+
+.content-panel,
+.right-sidebar-pane,
+.sidebar-content {
+	background: transparent;
+}
+
+.card,
+.pagination-links a,
+.sl-markdown pre,
+.hero {
+	border-radius: 1.5rem;
+}
+
+.sl-markdown pre {
+	border: 1px solid var(--color-outline-variant);
+	box-shadow: var(--shadow-soft);
+}
+
+.sl-markdown :not(pre) > code {
+	background: var(--color-surface-high);
+	border-radius: 0.5rem;
+}
+
+.pagination-links a,
+.card {
+	box-shadow: var(--shadow-soft);
+}
