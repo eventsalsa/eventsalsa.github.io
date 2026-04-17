@@ -4,7 +4,8 @@ import starlight from '@astrojs/starlight';
 
 const owner = process.env.GITHUB_REPOSITORY_OWNER ?? 'eventsalsa';
 const repo = process.env.GITHUB_REPOSITORY?.split('/')[1];
-const base = process.env.GITHUB_PAGES === 'true' && repo ? `/${repo}` : '/';
+const isRootPagesRepo = repo === `${owner}.github.io`;
+const base = process.env.GITHUB_PAGES === 'true' && repo && !isRootPagesRepo ? `/${repo}` : '/';
 
 // https://astro.build/config
 export default defineConfig({
@@ -21,7 +22,7 @@ export default defineConfig({
 			components: {
 				Header: './src/components/starlight/Header.astro',
 			},
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/eventsalsa/docs' }],
+			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/eventsalsa/store' }],
 			sidebar: [
 				{
 					label: 'Documentation',
