@@ -66,7 +66,9 @@ If orders are stored as appended events, how do you do something ordinary like:
 
 You generally do **not** answer those queries by scanning and rebuilding every order stream on demand. That would make simple reads unnecessarily expensive.
 
-Instead, you maintain **projections** (also called **read models**). A projection reads events and updates a query-friendly table or document structure. For example, you might maintain an `order_overview_v1` table with one row per order containing the fields needed for screens, reports, and search.
+Instead, you maintain **read models**. For example, you might keep an `order_overview_v1` table with one row per order containing the fields needed for screens, reports, and search.
+
+To keep that read model up to date, you need a process that reads events and updates the query-friendly structure. That process is called a **projection**.
 
 That gives you two distinct concerns:
 
@@ -120,7 +122,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"os"
 
 	_ "github.com/lib/pq"
 
@@ -128,7 +129,7 @@ import (
 )
 
 func openStore(ctx context.Context) (*sql.DB, *postgres.Store, error) {
-	db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -192,35 +193,40 @@ import (
 func buildOrderEvents(orderID string) ([]store.Event, error) {
 	now := time.Now().UTC()
 
-	placedPayload, err := json.Marshal(OrderPlaced{
+	placed := OrderPlaced{
 		CustomerID: "cust_42",
 		Currency:   "EUR",
-	})
-	if err != nil {
-		return nil, err
 	}
-
-	lineOnePayload, err := json.Marshal(OrderLineAdded{
+	lineOne := OrderLineAdded{
 		SKU:            "sku-coffee-grinder",
 		Quantity:       1,
 		UnitPriceCents: 12900,
-	})
-	if err != nil {
-		return nil, err
 	}
-
-	lineTwoPayload, err := json.Marshal(OrderLineAdded{
+	lineTwo := OrderLineAdded{
 		SKU:            "sku-espresso-cups",
 		Quantity:       2,
 		UnitPriceCents: 3400,
-	})
+	}
+	confirmed := OrderConfirmed{
+		ConfirmedAt: now.Add(2 * time.Minute),
+	}
+
+	placedPayload, err := json.Marshal(placed)
 	if err != nil {
 		return nil, err
 	}
 
-	confirmedPayload, err := json.Marshal(OrderConfirmed{
-		ConfirmedAt: now.Add(2 * time.Minute),
-	})
+	lineOnePayload, err := json.Marshal(lineOne)
+	if err != nil {
+		return nil, err
+	}
+
+	lineTwoPayload, err := json.Marshal(lineTwo)
+	if err != nil {
+		return nil, err
+	}
+
+	confirmedPayload, err := json.Marshal(confirmed)
 	if err != nil {
 		return nil, err
 	}
