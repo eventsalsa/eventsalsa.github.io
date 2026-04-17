@@ -14,10 +14,13 @@ export default defineConfig({
 		starlight({
 			title: 'eventsalsa',
 			description: 'Website and documentation for the eventsalsa event sourcing bundle for Go.',
-			tagline: 'Event sourcing for Go, with storage, workers, and encryption.',
+			tagline: 'A component-based stack for event sourcing in Go.',
 			lastUpdated: true,
 			disable404Route: true,
 			customCss: ['/src/styles/design-theme.css'],
+			components: {
+				Header: './src/components/starlight/Header.astro',
+			},
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/eventsalsa/docs' }],
 			sidebar: [
 				{

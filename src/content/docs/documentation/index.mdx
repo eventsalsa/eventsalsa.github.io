@@ -3,7 +3,7 @@ title: eventsalsa documentation
 description: Documentation scaffold for the eventsalsa event sourcing bundle for Go.
 template: splash
 hero:
-  tagline: Minimal documentation scaffolding is in place. Guides, references, and examples can now be filled in with project-backed content.
+  tagline: A component-based stack for event sourcing in Go.
   actions:
     - text: Getting started
       link: ./getting-started/
@@ -16,14 +16,28 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-<CardGrid stagger>
-	<Card title="eventsalsa/store">
-		Append-only event store scaffolding lives here first as documentation structure, not final product detail.
-	</Card>
-	<Card title="eventsalsa/worker">
-		Async consumers and projection workflows can be documented incrementally without changing the site foundation.
-	</Card>
-	<Card title="eventsalsa/encryption">
-		Encryption, crypto-shredding, and sensitive lookup guidance can be added when authoritative source material is ready.
-	</Card>
-</CardGrid>
+<div class="docs-component-grid">
+	<CardGrid>
+		<Card title="eventsalsa/store">
+			<p>
+				Learn how to append and read events, use optimistic concurrency, work with event
+				versioning, and build consumers and projections from the log.
+			</p>
+			<a class="card-read-more" href="./components/store/">Read more →</a>
+		</Card>
+		<Card title="eventsalsa/worker">
+			<p>
+				Learn how to run consumers asynchronously, scale them across worker processes, and keep
+				checkpoints and assignments in PostgreSQL.
+			</p>
+			<a class="card-read-more" href="./components/worker/">Read more →</a>
+		</Card>
+		<Card title="eventsalsa/encryption">
+			<p>
+				Learn how to secure sensitive event data with envelope encryption, crypto-shredding for
+				PII, and HMAC hashing for sensitive lookups.
+			</p>
+			<a class="card-read-more" href="./components/encryption/">Read more →</a>
+		</Card>
+	</CardGrid>
+</div>
