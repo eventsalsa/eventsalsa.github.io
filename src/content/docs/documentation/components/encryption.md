@@ -3,11 +3,11 @@ title: Encryption
 description: Secure event payloads with envelope encryption, crypto-shredding, key rotation, and clean integration boundaries.
 ---
 
-`eventsalsa/encryption` is the security-focused part of the bundle. It is designed for the places where event-sourced systems usually get uncomfortable: personal data that should not sit in cleartext forever, and secrets that need a deliberate rotation story.
+`eventsalsa/encryption` is the security-focused part of the bundle. It is meant for the two places where event-sourced systems usually need the most discipline: personal data that should not sit in cleartext forever, and operational secrets that need a sensible rotation story.
 
-Treat encryption as an early design concern. Event stores are append-only by design. If sensitive fields land in payloads in the wrong form, fixing that later is expensive, awkward, and often incomplete.
+Treat encryption as an early design concern. Event stores are append-only by design. Once sensitive fields land in payloads in the wrong form, fixing that later is expensive and often incomplete.
 
-`eventsalsa/encryption` does **not** depend on `eventsalsa/store` or `eventsalsa/worker`. It fits naturally with both, but you can also use it in a different persistence setup if that better matches your application.
+`eventsalsa/encryption` does **not** depend on `eventsalsa/store` or `eventsalsa/worker`. It fits naturally with both, but you can also use it in a different persistence model if that suits your system better.
 
 :::caution
 If there is any realistic chance that a field contains PII, credentials, tokens, or other regulated data, decide how it will be protected before the event schema becomes part of your system. With immutable events, this is a one-way door.
@@ -25,7 +25,7 @@ At runtime the flow is simple:
 - on encrypt, the module loads the active scope key, decrypts it with the system key, and encrypts the plaintext
 - on decrypt, it loads the recorded scope-key version, resolves the matching system key, and decrypts the ciphertext
 
-That separation is what makes crypto-shredding and rotation practical. You do not have to rewrite historical events just because key material changed.
+That separation is what makes crypto-shredding and rotation practical. You do not need to rewrite historical events just because key material changed.
 
 | Layer | What it protects | Where it lives |
 | --- | --- | --- |
@@ -35,36 +35,36 @@ That separation is what makes crypto-shredding and rotation practical. You do no
 
 ## Understand system keys and scope keys
 
-It helps to be explicit about the terminology:
+Two terms matter throughout the chapter:
 
 - a **system key** is a long-lived root key loaded by your application from a trusted source
 - a **scope key** is created for one logical `(scope, scopeID)` pair, such as `user-pii:user-123`
 
-Every stored scope key records the `system_key_id` that was used to encrypt it. That is important later: when the active system key changes, new scope keys use the new system key, while older scope keys still point to the earlier one and remain decryptable as long as that older system key is still available.
+Every stored scope key records the `system_key_id` that was used to encrypt it. That is what allows new keys to move forward under a new system key while older records remain decryptable for as long as the older system key is still available.
 
 ### Prepare a system key
 
 The file-based keyring reads **base64-encoded 32-byte keys**. In practice that means:
 
-- the underlying decoded key must be exactly 32 bytes long
+- the decoded key must be exactly 32 bytes long
 - the file should contain the base64 text for that key
 - a trailing newline is fine
 - the file should come from your secret-management flow, not from version control
 
-For local development, one straightforward way to generate such a file is:
+For local development, one straightforward way to produce such a file is:
 
 ```bash
 mkdir -p .secrets
 openssl rand -base64 32 > .secrets/eventsalsa-system-key-2025-01
 ```
 
-That command writes one key file suitable for `systemkey.NewKeyringFromFiles(...)`. In production, teams usually inject the same kind of material through mounted secrets, a vault, or another trusted secret-distribution mechanism.
+That file is suitable for `systemkey.NewKeyringFromFiles(...)`. In production, teams usually inject the same kind of material through mounted secrets, a vault, or a similar trusted delivery mechanism.
 
 :::note
 Keep system-key files out of git. They are operational secrets, not application assets.
 :::
 
-## Install and create the key table
+## Install and generate the migration
 
 You only need one module download:
 
@@ -72,41 +72,35 @@ You only need one module download:
 go get github.com/eventsalsa/encryption
 ```
 
-The PostgreSQL key-store adapter lives inside that same module, so once the module is available you can import `github.com/eventsalsa/encryption/keystore/postgres` directly.
+The PostgreSQL key-store adapter lives inside the same Go module, so once the module is available you can import `github.com/eventsalsa/encryption/keystore/postgres` directly.
 
-The PostgreSQL adapter uses a small key table. At the moment the package ships the SQL migration as embedded source rather than a dedicated `migrate-gen` command, so the usual approach is to copy this into your migration tool or load the embedded SQL from your own setup code.
+The quickest path for the database migration is the stable `migrate-gen` command:
 
-```sql
-CREATE TABLE IF NOT EXISTS infrastructure.encryption_keys (
-    scope TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
-    key_version INT NOT NULL,
-    encrypted_key BYTEA NOT NULL,
-    system_key_id TEXT NOT NULL DEFAULT 'default',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    revoked_at TIMESTAMPTZ,
-    PRIMARY KEY (scope, scope_id, key_version),
-    CONSTRAINT scope_not_empty CHECK (scope <> ''),
-    CONSTRAINT scope_id_not_empty CHECK (scope_id <> ''),
-    CONSTRAINT key_version_positive CHECK (key_version > 0),
-    CONSTRAINT encrypted_key_not_empty CHECK (length(encrypted_key) > 0),
-    CONSTRAINT system_key_id_not_empty CHECK (system_key_id <> '')
-);
+```bash
+go run github.com/eventsalsa/encryption/cmd/migrate-gen \
+  -output ./db/migrations \
+  -filename 003_encryption_keys.sql
+```
 
-CREATE INDEX IF NOT EXISTS idx_encryption_keys_active
-    ON infrastructure.encryption_keys(scope, scope_id, revoked_at)
-    WHERE revoked_at IS NULL;
+If you want the SQL on stdout instead of in a file:
 
-CREATE INDEX IF NOT EXISTS idx_encryption_keys_system_key_id
-    ON infrastructure.encryption_keys(system_key_id);
+```bash
+go run github.com/eventsalsa/encryption/cmd/migrate-gen -stdout
+```
+
+If your project uses a different schema or table name, the same CLI exposes those overrides directly:
+
+```bash
+go run github.com/eventsalsa/encryption/cmd/migrate-gen \
+  -schema infra \
+  -table encryption_keys \
+  -stdout
 ```
 
 The defaults are:
 
 - schema: `infrastructure`
 - table: `encryption_keys`
-
-You can override both with `postgres.Config`.
 
 ## Wire the module
 
@@ -125,7 +119,12 @@ import (
 	"github.com/eventsalsa/encryption/systemkey"
 )
 
-func openEncryptionModule(db *sql.DB) *encryption.Module {
+func main() {
+	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	keyring, err := systemkey.NewKeyringFromFiles(systemkey.FileKeyConfig{
 		KeyPaths: map[string]string{
 			"2025-01": ".secrets/eventsalsa-system-key-2025-01",
@@ -136,16 +135,15 @@ func openEncryptionModule(db *sql.DB) *encryption.Module {
 		log.Fatal(err)
 	}
 
-	keyStore := postgres.NewStore(postgres.Config{
-		Schema: "infrastructure",
-		Table:  "encryption_keys",
-	}, db)
+	keyStore := postgres.NewStore(postgres.DefaultConfig(), db)
 
-	return encryption.NewWithDefaults(
+	security := encryption.NewWithDefaults(
 		keyring,
 		keyStore,
 		encryption.WithHMACKey([]byte("replace-me-with-32-random-bytes")),
 	)
+
+	_ = security
 }
 ```
 
@@ -171,25 +169,33 @@ If your application carries transactions through a different context key, `postg
 That transaction-aware behavior is one of the most useful integration points in the component. The package stays storage-agnostic at the interface level, while the PostgreSQL adapter still plays well with an existing unit of work.
 :::
 
-## Encrypt PII without pushing infrastructure into the domain
+## Keep encrypted PII in your own value objects
 
-The cleanest pattern is to keep the domain model free of `eventsalsa/encryption` types, and let the repository translate plain domain events into encrypted persistence events inside the transaction.
+If you want to preserve a clean domain boundary, do **not** put `pii.EncryptedValue` directly into your domain event types. A better shape is:
 
-### Keep the aggregate and domain events plain
+1. define your own encrypted value objects
+2. let the application service encrypt plaintext before it reaches the aggregate
+3. let the aggregate emit events that already carry encrypted data
+4. let the repository adapter persist those events with `eventmap-gen` helpers
 
-In the domain layer, the aggregate collects ordinary business events. Nothing here needs to know about `pii.EncryptedValue`.
+### Define encrypted values in your own domain
 
 ```go
 package user
 
-type Registered struct {
+type EncryptedEmail string
+type EncryptedFirstName string
+type EncryptedLastName string
+
+type UserRegistered struct {
 	UserID    string
-	Email     string
-	FirstName string
-	LastName  string
+	Email     EncryptedEmail
+	FirstName EncryptedFirstName
+	LastName  EncryptedLastName
+	EmailHash string
 }
 
-type Deleted struct {
+type UserDeleted struct {
 	UserID string
 }
 
@@ -199,189 +205,74 @@ type User struct {
 	uncommitted []any
 }
 
-func Register(userID, email, firstName, lastName string) *User {
+func Register(
+	userID string,
+	email EncryptedEmail,
+	firstName EncryptedFirstName,
+	lastName EncryptedLastName,
+	emailHash string,
+) *User {
 	u := &User{id: userID}
-	u.uncommitted = append(u.uncommitted, Registered{
+	u.uncommitted = append(u.uncommitted, UserRegistered{
 		UserID:    userID,
 		Email:     email,
 		FirstName: firstName,
 		LastName:  lastName,
+		EmailHash: emailHash,
 	})
 	return u
 }
 
 func (u *User) Delete() {
-	u.uncommitted = append(u.uncommitted, Deleted{UserID: u.id})
+	u.uncommitted = append(u.uncommitted, UserDeleted{UserID: u.id})
 }
 
-func (u *User) ID() string {
-	return u.id
-}
+func (u *User) Version() int { return u.version }
 
-func (u *User) Version() int {
-	return u.version
-}
+func (u *User) UncommittedEvents() []any { return u.uncommitted }
 
-func (u *User) UncommittedEvents() []any {
-	return u.uncommitted
-}
+func (u *User) ClearUncommittedEvents() { u.uncommitted = nil }
+```
 
-func (u *User) ClearUncommittedEvents() {
-	u.uncommitted = nil
+### Keep the repository focused on persistence
+
+The repository should load and save aggregates. The repository adapter can replay streams, turn uncommitted domain events into `store.Event` values with generated helpers, and append them. It should not be the place where plaintext is encrypted or where key-destruction policy is decided.
+
+```go
+type UserRepository interface {
+	// The repository adapter loads aggregates from the store and persists
+	// the aggregate's uncommitted encrypted events with eventmap-gen helpers.
+	Load(ctx context.Context, userID string) (*user.User, error)
+	Save(ctx context.Context, aggregate *user.User) error
 }
 ```
 
-### Define persistence events with your own encrypted types
+### Encrypt before creating the aggregate event
 
-On the persistence side, you can still keep the boundary clean by defining your own encrypted field types instead of putting `pii.EncryptedValue` directly into the event schema package.
-
-```go
-package v1
-
-type EncryptedEmail string
-type EncryptedFirstName string
-type EncryptedLastName string
-
-type UserRegistered struct {
-	UserID    string             `json:"user_id"`
-	Email     EncryptedEmail     `json:"email"`
-	FirstName EncryptedFirstName `json:"first_name"`
-	LastName  EncryptedLastName  `json:"last_name"`
-	EmailHash string             `json:"email_hash"`
-}
-
-type UserDeleted struct {
-	UserID string `json:"user_id"`
-}
-```
-
-That way the event payload is still explicit about being encrypted, but the domain model does not take a dependency on the infrastructure package.
-
-### Let the repository translate and persist
-
-A repository in an event-sourced system should do repository work: load aggregates and save aggregates. A separate application service can decide *when* registration or deletion happens.
+That work belongs naturally in an application service or CQRS command handler.
 
 ```go
-package persistence
+package app
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
-	"github.com/eventsalsa/encryption"
-	"github.com/eventsalsa/encryption/keystore"
+	encryptionhash "github.com/eventsalsa/encryption/hash"
+	"github.com/eventsalsa/encryption/keymanager"
 	"github.com/eventsalsa/encryption/pii"
-	"github.com/eventsalsa/store"
 
 	"github.com/acme/shop/internal/domain/user"
-	userv1 "github.com/acme/shop/internal/infrastructure/persistence/userevents/v1"
-	userevents "github.com/acme/shop/internal/infrastructure/persistence/userevents"
 )
 
 type UserID string
 
 func (id UserID) String() string { return string(id) }
 
-type UserRepository interface {
-	Load(ctx context.Context, userID string) (*user.User, error)
-	Save(ctx context.Context, aggregate *user.User) error
-}
-
-type PostgresUserRepository struct {
-	db       *sql.DB
-	store    store.Store
-	security *encryption.Module
-	userPII  *pii.Adapter[UserID]
-}
-
-func (r *PostgresUserRepository) Save(ctx context.Context, aggregate *user.User) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	ctx = keystore.WithTx(ctx, tx)
-
-	var esEvents []store.Event
-	destroyUserKey := false
-
-	for _, pending := range aggregate.UncommittedEvents() {
-		switch e := pending.(type) {
-		case user.Registered:
-			if _, err := r.security.KeyManager.CreateKey(ctx, "user-pii", e.UserID); err != nil {
-				return fmt.Errorf("create user key: %w", err)
-			}
-
-			encryptedEmail, err := r.userPII.Encrypt(ctx, UserID(e.UserID), e.Email)
-			if err != nil {
-				return fmt.Errorf("encrypt email: %w", err)
-			}
-			encryptedFirstName, err := r.userPII.Encrypt(ctx, UserID(e.UserID), e.FirstName)
-			if err != nil {
-				return fmt.Errorf("encrypt first name: %w", err)
-			}
-			encryptedLastName, err := r.userPII.Encrypt(ctx, UserID(e.UserID), e.LastName)
-			if err != nil {
-				return fmt.Errorf("encrypt last name: %w", err)
-			}
-
-			esEvent, err := userevents.ToUserRegisteredV1(
-				"User",
-				e.UserID,
-				userv1.UserRegistered{
-					UserID:    e.UserID,
-					Email:     userv1.EncryptedEmail(encryptedEmail),
-					FirstName: userv1.EncryptedFirstName(encryptedFirstName),
-					LastName:  userv1.EncryptedLastName(encryptedLastName),
-					EmailHash: r.security.Hasher.Hash(e.Email),
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("build user registered event: %w", err)
-			}
-
-			esEvents = append(esEvents, esEvent)
-
-		case user.Deleted:
-			esEvent, err := userevents.ToUserDeletedV1(
-				"User",
-				e.UserID,
-				userv1.UserDeleted{UserID: e.UserID},
-			)
-			if err != nil {
-				return fmt.Errorf("build user deleted event: %w", err)
-			}
-
-			esEvents = append(esEvents, esEvent)
-			destroyUserKey = true
-		}
-	}
-
-	if _, err := r.store.Append(ctx, tx, store.AppendInput{
-		ExpectedVersion: store.Exact(aggregate.Version()),
-		Events:          esEvents,
-	}); err != nil {
-		return fmt.Errorf("append user stream: %w", err)
-	}
-
-	if destroyUserKey {
-		if err := r.security.KeyManager.DestroyKeys(ctx, "user-pii", aggregate.ID()); err != nil {
-			return fmt.Errorf("destroy user key: %w", err)
-		}
-	}
-
-	aggregate.ClearUncommittedEvents()
-	return tx.Commit()
-}
-```
-
-The application service stays small and focused:
-
-```go
 type RegistrationService struct {
-	users UserRepository
+	users   UserRepository
+	keys    *keymanager.Manager
+	userPII *pii.Adapter[UserID]
+	hasher  encryptionhash.Hasher
 }
 
 func (s *RegistrationService) Register(
@@ -391,20 +282,42 @@ func (s *RegistrationService) Register(
 	firstName string,
 	lastName string,
 ) error {
-	aggregate := user.Register(userID, email, firstName, lastName)
+	if _, err := s.keys.CreateKey(ctx, "user-pii", userID); err != nil {
+		return err
+	}
+
+	encryptedEmail, err := s.userPII.Encrypt(ctx, UserID(userID), email)
+	if err != nil {
+		return err
+	}
+	encryptedFirstName, err := s.userPII.Encrypt(ctx, UserID(userID), firstName)
+	if err != nil {
+		return err
+	}
+	encryptedLastName, err := s.userPII.Encrypt(ctx, UserID(userID), lastName)
+	if err != nil {
+		return err
+	}
+
+	aggregate := user.Register(
+		userID,
+		user.EncryptedEmail(encryptedEmail),
+		user.EncryptedFirstName(encryptedFirstName),
+		user.EncryptedLastName(encryptedLastName),
+		s.hasher.Hash(email),
+	)
+
 	return s.users.Save(ctx, aggregate)
 }
 ```
 
-:::caution
-Create the key, encrypt the fields, build the persistence events, and append them in the same database transaction. If those steps drift apart, you can end up with ciphertext that no durable event references, or with events that can never be decrypted reliably later.
-:::
+If you want key creation and `Save(...)` to be atomic, run the service inside a unit of work and let the shared `context.Context` carry the transaction so both the encryption key store and the repository adapter see the same `*sql.Tx`.
 
 ## Project decrypted data into an idempotent read model
 
 Encrypted payloads are not meant for querying directly. The usual pattern is to decrypt them inside a projection and write the cleartext only into the read model that genuinely needs it.
 
-For a user directory, the read model might look like this:
+For a user directory, the read model should keep the last applied global position so updates can remain idempotent:
 
 ```sql
 CREATE TABLE read_model.user_directory_v1 (
@@ -412,17 +325,15 @@ CREATE TABLE read_model.user_directory_v1 (
     email TEXT NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
-    email_hash TEXT NOT NULL UNIQUE
+    email_hash TEXT NOT NULL UNIQUE,
+    last_global_position BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_user_directory_v1_email_hash
     ON read_model.user_directory_v1 (email_hash);
 ```
 
-This projection is idempotent by construction:
-
-- `UserRegistered` uses an upsert
-- `UserDeleted` uses a delete, which is naturally repeatable
+The projection can then upsert only when the incoming event is newer than what the row has already seen.
 
 ```go
 package projections
@@ -435,7 +346,7 @@ import (
 	"github.com/eventsalsa/encryption/pii"
 	"github.com/eventsalsa/store"
 
-	userv1 "github.com/acme/shop/internal/infrastructure/persistence/userevents/v1"
+	userv1 "github.com/acme/shop/internal/domain/user/events/v1"
 	userevents "github.com/acme/shop/internal/infrastructure/persistence/userevents"
 )
 
@@ -445,10 +356,6 @@ func (id UserID) String() string { return string(id) }
 
 type UserDirectoryProjection struct {
 	userPII *pii.Adapter[UserID]
-}
-
-func (p *UserDirectoryProjection) Name() string {
-	return "user_directory_projection"
 }
 
 func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
@@ -480,22 +387,18 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 				email,
 				first_name,
 				last_name,
-				email_hash
+				email_hash,
+				last_global_position
 			)
-			VALUES ($1, $2, $3, $4, $5)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (user_id) DO UPDATE
 			SET email = EXCLUDED.email,
 			    first_name = EXCLUDED.first_name,
 			    last_name = EXCLUDED.last_name,
-			    email_hash = EXCLUDED.email_hash
-		`, e.UserID, email, firstName, lastName, e.EmailHash)
-		return err
-
-	case userv1.UserDeleted:
-		_, err := tx.ExecContext(ctx, `
-			DELETE FROM read_model.user_directory_v1
-			WHERE user_id = $1
-		`, e.UserID)
+			    email_hash = EXCLUDED.email_hash,
+			    last_global_position = EXCLUDED.last_global_position
+			WHERE read_model.user_directory_v1.last_global_position < EXCLUDED.last_global_position
+		`, e.UserID, email, firstName, lastName, e.EmailHash, event.GlobalPosition)
 		return err
 	}
 
@@ -507,14 +410,17 @@ That same projection can run inline for strong consistency or through `eventsals
 
 ## Delete personal data without rewriting history
 
-A deletion workflow in an event-sourced system usually has two coordinated outcomes:
+When a user is deleted, the write side should still record a business event such as `UserDeleted`. Separately, the user's encryption key should be destroyed so earlier encrypted PII becomes unreadable.
 
-1. the write side records a business event such as `UserDeleted`
-2. the encryption layer destroys the user's scope key in the same transaction
+That key destruction should usually happen in the same unit of work as the append. The important point is ownership: the repository adapter persists aggregates, while the application layer decides when the key lifecycle action should happen.
 
-That keeps the business story intact while making earlier encrypted PII unreadable.
+You do not need a large example here. The rule is simple:
 
-On the read side, the deletion branch is intentionally boring. The projection sees `UserDeleted` and removes the row:
+- append `UserDeleted`
+- call `KeyManager.DestroyKeys(ctx, "user-pii", userID)`
+- make both steps part of the same unit of work if you need atomicity
+
+On the read side, the deletion branch simply removes the row:
 
 ```go
 func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
@@ -538,137 +444,105 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 }
 ```
 
+If you want the delete path to retain the same last-position guard after the row is gone, keep a small tombstone or projection-state table keyed by `user_id` and store the delete event's `global_position` there in the same transaction.
+
 :::caution
 For PII, destruction is usually the decisive operation. Revocation is not enough if the requirement is that historical personal data must become unreadable.
 :::
 
-## Rotate secrets without breaking old events
+## Rotate secrets without turning key rotation into a domain event
 
 Secrets have a different lifecycle. API tokens, webhook credentials, and similar values usually need rotation, and older ciphertext may still need to be replayed or audited later.
 
-The same boundary rule applies here as well:
+The business fact is usually that a credential was set or replaced. Scope-key rotation is an infrastructure concern that the application layer handles before the aggregate emits its event.
 
-- plain domain events in the domain layer
-- encrypted persistence events in the infrastructure layer
-- the repository performs the translation while saving
-
-One persistence-event shape might look like this:
+One way to model the encrypted value in your own domain is:
 
 ```go
-package v1
+package integration
 
 type EncryptedAPIKey struct {
-	Content    string `json:"content"`
-	KeyVersion int    `json:"key_version"`
+	Content    string
+	KeyVersion int
 }
 
 type APICredentialSet struct {
-	IntegrationID string          `json:"integration_id"`
-	Provider      string          `json:"provider"`
-	APIKey        EncryptedAPIKey `json:"api_key"`
+	IntegrationID string
+	Provider      string
+	APIKey        EncryptedAPIKey
 }
 ```
 
-When the aggregate has a first credential to persist, the repository creates a scope key. When the credential is replaced, the repository rotates that key before encrypting the new value.
+A command handler can then rotate the scope key, encrypt the new credential, and pass the encrypted value into the aggregate:
 
 ```go
-func (r *PostgresIntegrationRepository) Save(ctx context.Context, aggregate *integration.Integration) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+package app
+
+import (
+	"context"
+
+	"github.com/eventsalsa/encryption/keymanager"
+	"github.com/eventsalsa/encryption/secret"
+
+	"github.com/acme/shop/internal/domain/integration"
+)
+
+type IntegrationRepository interface {
+	Load(ctx context.Context, integrationID string) (*integration.Aggregate, error)
+	Save(ctx context.Context, aggregate *integration.Aggregate) error
+}
+
+type ReplaceCredentialHandler struct {
+	integrations IntegrationRepository
+	keys         *keymanager.Manager
+	secrets      *secret.Adapter
+}
+
+func (h *ReplaceCredentialHandler) Handle(
+	ctx context.Context,
+	integrationID string,
+	provider string,
+	plaintextAPIKey string,
+) error {
+	scope := "integration-api-token"
+
+	if _, err := h.keys.RotateKey(ctx, scope, integrationID); err != nil {
+		return err
+	}
+
+	encryptedAPIKey, err := h.secrets.Encrypt(ctx, scope, integrationID, plaintextAPIKey)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
 
-	ctx = keystore.WithTx(ctx, tx)
-
-	var esEvents []store.Event
-	scope := "integration-api-token"
-
-	for _, pending := range aggregate.UncommittedEvents() {
-		switch e := pending.(type) {
-		case integration.APICredentialAdded:
-			if _, err := r.security.KeyManager.CreateKey(ctx, scope, e.IntegrationID); err != nil {
-				return fmt.Errorf("create integration key: %w", err)
-			}
-
-			encryptedAPIKey, err := r.secretAdapter.Encrypt(ctx, scope, e.IntegrationID, e.APIKey)
-			if err != nil {
-				return fmt.Errorf("encrypt api key: %w", err)
-			}
-
-			esEvent, err := integrationevents.ToAPICredentialSetV1(
-				"Integration",
-				e.IntegrationID,
-				integrationv1.APICredentialSet{
-					IntegrationID: e.IntegrationID,
-					Provider:      e.Provider,
-					APIKey: integrationv1.EncryptedAPIKey{
-						Content:    encryptedAPIKey.Content,
-						KeyVersion: encryptedAPIKey.KeyVersion,
-					},
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("build credential event: %w", err)
-			}
-
-			esEvents = append(esEvents, esEvent)
-
-		case integration.APICredentialRotated:
-			if _, err := r.security.KeyManager.RotateKey(ctx, scope, e.IntegrationID); err != nil {
-				return fmt.Errorf("rotate integration key: %w", err)
-			}
-
-			encryptedAPIKey, err := r.secretAdapter.Encrypt(ctx, scope, e.IntegrationID, e.APIKey)
-			if err != nil {
-				return fmt.Errorf("encrypt rotated api key: %w", err)
-			}
-
-			esEvent, err := integrationevents.ToAPICredentialSetV1(
-				"Integration",
-				e.IntegrationID,
-				integrationv1.APICredentialSet{
-					IntegrationID: e.IntegrationID,
-					Provider:      e.Provider,
-					APIKey: integrationv1.EncryptedAPIKey{
-						Content:    encryptedAPIKey.Content,
-						KeyVersion: encryptedAPIKey.KeyVersion,
-					},
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("build rotated credential event: %w", err)
-			}
-
-			esEvents = append(esEvents, esEvent)
-		}
+	aggregate, err := h.integrations.Load(ctx, integrationID)
+	if err != nil {
+		return err
 	}
 
-	if _, err := r.store.Append(ctx, tx, store.AppendInput{
-		ExpectedVersion: store.Exact(aggregate.Version()),
-		Events:          esEvents,
-	}); err != nil {
-		return fmt.Errorf("append integration stream: %w", err)
-	}
+	aggregate.SetCredential(
+		provider,
+		integration.EncryptedAPIKey{
+			Content:    encryptedAPIKey.Content,
+			KeyVersion: encryptedAPIKey.KeyVersion,
+		},
+	)
 
-	aggregate.ClearUncommittedEvents()
-	return tx.Commit()
+	return h.integrations.Save(ctx, aggregate)
 }
 ```
 
-`RotateKey(...)` creates a new scope-key version and revokes older versions as active write targets. Historical ciphertext still decrypts, because the stored payload remembers the version it was encrypted with.
+The important part is the split of responsibilities:
 
-For credentials, a common policy is:
-
-- rotate when the secret changes
-- keep older versions decryptable while history still matters
-- destroy the keys later when the integration is removed and the old values no longer need to be recoverable
+- the application layer rotates the key and encrypts the new secret
+- the aggregate records the business fact that the credential changed
+- the repository adapter only persists the resulting events
 
 ## Rotate system keys deliberately
 
 System-key rotation is separate from scope-key rotation.
 
-When you mark a different key as active in the keyring, new `CreateKey(...)` and `RotateKey(...)` calls use that system key ID. Existing scope keys keep the `system_key_id` they already have, which means older data remains decryptable only while those older system keys are still available.
+When you mark a different system key as active in the keyring, new `CreateKey(...)` and `RotateKey(...)` calls start using that new key ID. Existing scope keys, however, still point at the `system_key_id` they were originally encrypted with.
 
 ```go
 keyring, err := systemkey.NewKeyringFromFiles(systemkey.FileKeyConfig{
@@ -680,26 +554,30 @@ keyring, err := systemkey.NewKeyringFromFiles(systemkey.FileKeyConfig{
 })
 ```
 
-In practice:
+Operationally, a full retirement of the old system key usually needs two stages:
 
-- changing `ActiveKeyID` affects new scope-key creation and rotation
-- it does **not** re-encrypt scope keys that already exist
-- you should not retire an older system key until every scope key that depends on it has either been replaced or intentionally destroyed
+1. introduce the new system key and make it active
+2. re-encrypt existing stored scope keys that still reference the old `system_key_id`
 
-For PII, that last point matters even more because the scoped PII keys do not rotate. The package gives you clean system-key selection, but it does not currently expose a built-in DEK rewrap API.
+That second step is how you actually retire the old system key. At the moment, `eventsalsa/encryption` does **not** ship a built-in rewrap API for existing stored scope keys, so if you rotate system keys you should keep the old key available until you have either:
 
-## Use hashing for sensitive lookups
+- re-encrypted the affected scope keys with your own carefully reviewed tooling, or
+- intentionally destroyed the scopes that still depend on it
 
-Some values should be searchable without being readable. That is where the module's HMAC hasher fits.
+## Use hashing for sensitive identifiers and lookups
+
+Some values should be searchable or usable as stable identifiers without being readable. That is where the module's HMAC hasher fits.
+
+One practical use case is deriving an aggregate ID from sensitive data such as a normalized email address or, in some systems, a username:
 
 ```go
-emailHash := security.Hasher.Hash(email)
+aggregateID := security.Hasher.Hash(normalizedEmail)
 ```
 
-A keyed hash is useful for cases such as:
+That is also useful on the read side for cases such as:
 
 - uniqueness checks on an email address
-- locating a user by a sensitive identifier
+- locating a record by a sensitive identifier
 - joining to a read model without using the cleartext value as the index key
 
 Keep the HMAC key separate from your system keys. It solves a different problem.
