@@ -57,7 +57,7 @@ const benefits = [
 		icon: 'database',
 		title: 'PostgreSQL-driven',
 		description:
-			'The store and worker are built on PostgreSQL, which keeps adoption approachable for teams that already run it.',
+			'The store and worker are built on PostgreSQL - no need for a 3rd party message broker.',
 	},
 	{
 		icon: 'schema',
@@ -154,7 +154,7 @@ const workerCodeLines = [
 			<div class="hero-section">
 				<div class="hero-content">
 					<h1>eventsalsa</h1>
-					<p class="hero-copy">eventsalsa is a component-based stack for event sourcing in Go.</p>
+					<p class="hero-copy">A component-based stack for event sourcing in Go</p>
 					<div class="hero-actions">
 						<a class="button button--primary" href={documentationHref}>Open documentation</a>
 						<a class="button button--secondary" href={githubHref}>View GitHub</a>
@@ -398,9 +398,12 @@ const workerCodeLines = [
 	}
 
 	.brand {
+		display: inline-flex;
+		align-items: center;
 		text-decoration: none;
 		font-size: 1.5rem;
 		font-weight: 800;
+		line-height: 1;
 		letter-spacing: -0.05em;
 		color: var(--color-primary-strong);
 	}

@@ -217,9 +217,12 @@ header.header {
 }
 
 .docs-brand {
+	display: inline-flex;
+	align-items: center;
 	text-decoration: none;
 	font-size: 1.5rem;
 	font-weight: 800;
+	line-height: 1;
 	letter-spacing: -0.05em;
 	color: var(--color-primary-strong);
 }
@@ -309,6 +312,12 @@ site-search.docs-search button[data-open-modal] svg {
 
 .sidebar-pane {
 	background: var(--color-sidebar-surface);
+}
+
+.sidebar-content [aria-current='page'],
+.sidebar-content [aria-current='page']:hover,
+.sidebar-content [aria-current='page']:focus {
+	color: var(--color-on-primary);
 }
 
 .content-panel,
@@ -421,6 +430,12 @@ site-search.docs-search button[data-open-modal] svg {
 
 	.docs-component-grid .card-grid {
 		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+}
+
+@media (min-width: 140rem) {
+	html[data-has-sidebar] {
+		--sl-content-width: 70rem;
 	}
 }
 
