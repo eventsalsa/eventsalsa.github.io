@@ -11,6 +11,7 @@
 - When changing documentation navigation, keep routes and sidebar labels straightforward and stable.
 - Use semantic HTML, accessible copy, and static-first Astro patterns for website work.
 - Branches starting with `copilot/` are reserved for GitHub Copilot online/cloud sessions. Do not create normal working branches under that prefix.
+- For documentation chapters, write in a natural, professional tone. Avoid heading-only code sections; explain snippets before and after them, and split large examples into smaller steps with explanatory prose between them.
 - Validate changes with the existing project commands from the repository root:
   - `npm install`
   - `npm run dev`
