@@ -3,19 +3,14 @@ title: Worker
 description: Run consumers and projections asynchronously with eventsalsa/worker.
 ---
 
-`eventsalsa/worker` is the asynchronous side of the bundle. It builds on `eventsalsa/store` and gives you a PostgreSQL-native runtime for projections and other consumers: worker registration, leader election, consumer assignment, checkpointing, wakeup dispatching, and batched event processing.
+`eventsalsa/worker` is the asynchronous side of the bundle. It builds on `eventsalsa/store` and gives you a PostgreSQL-native runtime for projections and other consumers.
 
 The important idea is that the worker is not a second event store. It is the runtime that reads the store's global log safely and drives consumers forward without needing Redis, ZooKeeper, or a message broker just to coordinate who handles what.
 
 At a practical level, the component covers:
 
-- worker registration and heartbeats in PostgreSQL
-- leader election with PostgreSQL advisory locks
-- deterministic consumer assignment across live workers
-- checkpoint persistence per consumer
-- wakeup dispatching through polling or `LISTEN`/`NOTIFY`
-- batched transactional event handling
-- gap-aware frontier handling so checkpoints advance safely
+- running consumers and projections outside the request path
+- scaling those consumers across multiple worker processes
 
 ## Install the worker
 
@@ -105,7 +100,6 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -118,7 +112,7 @@ import (
 )
 
 func main() {
-	connStr := os.Getenv("DATABASE_URL")
+	connStr := "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable"
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
