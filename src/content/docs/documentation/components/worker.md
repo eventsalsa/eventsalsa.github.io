@@ -27,9 +27,28 @@ In a real application, the worker usually sits next to `github.com/eventsalsa/st
 
 ## Generate the worker migration SQL
 
-Unlike `eventsalsa/store`, the worker currently exposes migration generation through a Go package rather than a standalone CLI. That works well in practice because the worker migration has a small, explicit configuration surface.
+The quickest path is the stable `migrate-gen` command:
 
-One straightforward way to generate the SQL is to keep a tiny helper program in your repository:
+```bash
+go run github.com/eventsalsa/worker/cmd/migrate-gen \
+  -output ./db/migrations \
+  -filename 002_worker_tables.sql
+```
+
+That command writes a SQL migration file containing the worker metadata tables. Check that file into your migration flow and apply it before starting any worker process.
+
+If you need custom table names, the CLI exposes the same knobs as `migrations.Config`:
+
+```bash
+go run github.com/eventsalsa/worker/cmd/migrate-gen \
+  -output ./db/migrations \
+  -worker-nodes-table infra.worker_nodes \
+  -consumer-assignments-table infra.consumer_assignments \
+  -consumer-checkpoints-table infra.consumer_checkpoints \
+  -consumer-gap-skips-table infra.consumer_gap_skips
+```
+
+For more advanced integration, you can still call the `migrations` package from your own helper program:
 
 ```go
 package main
@@ -42,16 +61,18 @@ import (
 
 func main() {
 	config := migrations.DefaultConfig()
-	config.OutputFolder = "migrations"
-	config.OutputFilename = "002_worker_infrastructure.sql"
+	config.OutputFolder = "./db/migrations"
+	config.OutputFilename = "002_worker_tables.sql"
+	config.WorkerNodesTable = "infra.worker_nodes"
+	config.ConsumerAssignmentsTable = "infra.consumer_assignments"
+	config.ConsumerCheckpointsTable = "infra.consumer_checkpoints"
+	config.ConsumerGapSkipsTable = "infra.consumer_gap_skips"
 
 	if err := migrations.GeneratePostgres(&config); err != nil {
 		log.Fatal(err)
 	}
 }
 ```
-
-Run that helper with `go run`, check the generated SQL into your migration flow, and apply it before starting any worker process.
 
 The generated migration creates four tables:
 
@@ -61,6 +82,8 @@ The generated migration creates four tables:
 - `consumer_gap_skips`
 
 Those tables are the worker's control plane. They do not hold domain data; they hold worker liveness, ownership, progress, and stale-gap audit information.
+
+When table names include schema prefixes, the generated SQL also adds the matching `CREATE SCHEMA IF NOT EXISTS ...` statements automatically.
 
 ## Minimum example
 
