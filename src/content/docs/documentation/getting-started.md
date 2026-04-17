@@ -574,17 +574,10 @@ For a first system, that is often the simplest way to introduce projections. You
 
 ## Where to go next
 
-At this point you have the essential pieces:
+Once the first flow makes sense, the next useful chapters are:
 
-- an event stream per aggregate
-- optimistic concurrency on append
-- stream reads for rebuilding aggregate state
-- a projection that maintains a read model for queries
+- [Store](./components/store/) for append semantics, event mapping generation, stream reads, projections, configuration, and operational guidance
+- [Worker](./components/worker/) when you want to move projections into an eventually consistent async runtime
+- [Encryption](./components/encryption/) before sensitive payload data starts becoming a liability
 
-That is enough to understand the core shape of event sourcing with `eventsalsa/store`. From here, the next steps are usually:
-
-- handling updates with `store.Exact(currentVersion)`
-- adding more projections for different read cases
-- formalizing event-to-payload mapping as the domain grows
-
-Those can come next. The important part is that the fundamentals are now in place.
+That sequence tends to match how real systems grow: first get the write model right, then scale the read side, then harden the event payload story before it becomes painful to change.
