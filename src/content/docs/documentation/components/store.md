@@ -119,11 +119,11 @@ type OrderRepository struct {
 	eventStore *postgres.Store
 }
 
-func (r *OrderRepository) Save(ctx context.Context, order *Order, pending []any, meta CommandMetadata) error {
+func (r *OrderRepository) Save(ctx context.Context, order *Order, meta CommandMetadata) error {
 	events, err := orderes.ToESEvents(
 		"Order",
 		order.ID,
-		pending,
+		order.PendingEvents(),
 		orderes.WithCausationID(meta.CommandID),
 		orderes.WithCorrelationID(meta.CorrelationID),
 		orderes.WithTraceID(meta.TraceID),
@@ -154,16 +154,18 @@ func (r *OrderRepository) Save(ctx context.Context, order *Order, pending []any,
 		return err
 	}
 
+	order.ClearPendingEvents()
 	return nil
 }
 ```
 
 The important part is not the exact repository shape. The important part is the flow:
 
-1. build store events from domain events
+1. build store events from the aggregate's pending event bag
 2. choose the expected version from the aggregate's current version
 3. append inside a short transaction
-4. treat `store.ErrOptimisticConcurrency` as a normal business race, not as a mysterious infrastructure problem
+4. clear the pending event bag only after commit succeeds
+5. treat `store.ErrOptimisticConcurrency` as a normal business race, not as a mysterious infrastructure problem
 
 ## Mapping domain events with `eventmap-gen`
 
@@ -394,7 +396,7 @@ func (r *OrderRepository) Load(ctx context.Context, orderID string) (*order.Orde
 		return nil, err
 	}
 
-	aggregate := order.New(orderID)
+	aggregate := &order.Order{}
 	for i, event := range decoded {
 		if err := aggregate.Apply(event); err != nil {
 			return nil, fmt.Errorf("apply order event %d: %w", i, err)
@@ -435,6 +437,7 @@ type Order struct {
 func (o *Order) Apply(event any) error {
 	switch e := event.(type) {
 	case orderv1.OrderPlaced:
+		o.ID = e.OrderID
 		o.CustomerID = e.CustomerID
 		o.Currency = e.Currency
 		o.Status = "pending"

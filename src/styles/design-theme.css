@@ -169,6 +169,8 @@ select {
 
 :root[data-theme='light'] {
 	--sl-color-backdrop-overlay: rgba(113, 120, 124, 0.5);
+	--sl-color-orange-low: var(--color-tertiary-soft);
+	--sl-color-orange-high: var(--color-tertiary);
 }
 
 header.header {
