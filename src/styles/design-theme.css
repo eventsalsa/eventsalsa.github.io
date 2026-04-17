@@ -159,9 +159,9 @@ select {
 	--sl-color-gray-4: var(--color-outline-variant);
 	--sl-color-gray-5: var(--color-surface-highest);
 	--sl-color-gray-6: var(--color-surface-high);
-	--sl-color-orange-low: var(--color-tertiary-soft);
+	--sl-color-orange-low: #36240d;
 	--sl-color-orange: var(--color-tertiary);
-	--sl-color-orange-high: var(--color-tertiary);
+	--sl-color-orange-high: #ffd7a8;
 	--sl-shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.12);
 	--sl-shadow-md: var(--shadow-soft);
 	--sl-shadow-lg: var(--shadow-panel);

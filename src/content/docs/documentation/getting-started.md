@@ -576,8 +576,8 @@ For a first system, that is often the simplest way to introduce projections. You
 
 Once the first flow makes sense, the next useful chapters are:
 
-- [Store](./components/store/) for append semantics, event mapping generation, stream reads, projections, configuration, and operational guidance
-- [Worker](./components/worker/) when you want to move projections into an eventually consistent async runtime
-- [Encryption](./components/encryption/) before sensitive payload data starts becoming a liability
+- [Store](../components/store/) for append semantics, event mapping generation, stream reads, projections, configuration, and operational guidance
+- [Worker](../components/worker/) when you want to move projections into an eventually consistent async runtime
+- [Encryption](../components/encryption/) before sensitive payload data starts becoming a liability
 
 That sequence tends to match how real systems grow: first get the write model right, then scale the read side, then harden the event payload story before it becomes painful to change.

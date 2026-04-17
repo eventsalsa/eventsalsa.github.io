@@ -301,6 +301,12 @@ Here is what each option controls:
 
 `WithNotifyChannel(...)` is worth calling out. The notification is emitted inside the append transaction, which means listeners only wake up after the transaction commits. That avoids phantom work on rolled-back writes.
 
+:::caution
+`WithNotifyChannel(...)` is a good fit when listeners hold real PostgreSQL connections and can safely `LISTEN` on the same database.
+
+If your consumers sit behind PgBouncer or a similar pooler in transaction-pooling mode, rely on the worker's polling strategy instead of `LISTEN/NOTIFY`. Poolers can break long-lived listener connections in ways that make notification delivery unreliable.
+:::
+
 ## Reading streams
 
 Reading an aggregate stream is what you do when you want the most accurate view of one aggregate's state. That is the normal path for command handling: load the stream, replay it into an entity, make a decision, and then append new events with an expected version derived from that entity.
@@ -351,20 +357,69 @@ toVersion := int64(9)
 stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, &fromVersion, &toVersion)
 ```
 
-### Apply the stream with generated helpers
+### Load and replay with generated helpers
 
-Once you have the stream, replay it into your aggregate. This is where the generated mapping helpers become especially useful.
+There are two layers involved here and it is worth keeping them separate.
+
+The repository adapter is responsible for reading the stream and translating persisted events into domain events. The aggregate is responsible for applying already-decoded domain events.
+
+In the infrastructure layer, a `Load` function can do the stream read and the decoding:
 
 ```go
-package domain
+package persistence
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/acme/shop/internal/domain/order"
+	orderes "github.com/acme/shop/internal/infrastructure/order/persistence/generated"
+)
+
+func (r *OrderRepository) Load(ctx context.Context, orderID string) (*order.Order, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stream, err := r.eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := orderes.FromESEvents[any](stream.Events)
+	if err != nil {
+		return nil, err
+	}
+
+	aggregate := order.New(orderID)
+	for i, event := range decoded {
+		if err := aggregate.Apply(event); err != nil {
+			return nil, fmt.Errorf("apply order event %d: %w", i, err)
+		}
+	}
+
+	aggregate.Version = stream.Version()
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return aggregate, nil
+}
+```
+
+Inside the domain, `Apply` can now stay focused on domain events and nothing else:
+
+```go
+package order
 
 import (
 	"fmt"
 
-	"github.com/eventsalsa/store"
-
 	orderv1 "github.com/acme/shop/internal/domain/order/events/v1"
-	orderes "github.com/acme/shop/internal/infrastructure/order/persistence/generated"
 )
 
 type Order struct {
@@ -377,15 +432,9 @@ type Order struct {
 	Version    int64
 }
 
-func (o *Order) Apply(event store.PersistedEvent) error {
-	domainEvent, err := orderes.FromESEvent(event)
-	if err != nil {
-		return err
-	}
-
-	switch e := domainEvent.(type) {
+func (o *Order) Apply(event any) error {
+	switch e := event.(type) {
 	case orderv1.OrderPlaced:
-		o.ID = event.AggregateID
 		o.CustomerID = e.CustomerID
 		o.Currency = e.Currency
 		o.Status = "pending"
@@ -401,12 +450,11 @@ func (o *Order) Apply(event store.PersistedEvent) error {
 		return fmt.Errorf("unexpected order event %T", e)
 	}
 
-	o.Version = event.AggregateVersion
 	return nil
 }
 ```
 
-That is the kind of switch you usually want. It is based on exact Go types, not on hand-maintained strings.
+That keeps the boundary clean. The infrastructure layer knows how to read and decode persisted events. The domain layer only knows how to apply business facts.
 
 When business logic needs a precise, authoritative state snapshot, replaying the aggregate stream is the safe place to stand. For broad query workloads, however, rebuilding many aggregates on demand is usually the wrong tool.
 
@@ -427,47 +475,34 @@ In store terms, projections usually consume the global log through `ReadEvents`,
 
 A global projection is just a consumer that does **not** scope itself to specific aggregate types. That is useful for cross-cutting concerns such as metrics, audit summaries, or integration publishing.
 
-Here is a simple metrics projection. It receives the full log, but in this example it only counts `Order` events:
+Here is a simple metrics projection that counts processed events and exposes them as Prometheus metrics. It receives the whole log, does not filter on aggregate type, and ignores the SQL transaction because it writes to a metrics registry rather than a database table:
 
 ```go
-type OrderMetricsProjection struct{}
+var projectedEventsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "eventsalsa_projection_events_total",
+		Help: "Total number of events processed by projection handlers.",
+	},
+	[]string{"projection", "aggregate_type", "event_type"},
+)
 
-func (p *OrderMetricsProjection) Name() string {
-	return "order_metrics_v1"
+type ProjectionMetrics struct{}
+
+func (p *ProjectionMetrics) Name() string {
+	return "projection_metrics"
 }
 
-func (p *OrderMetricsProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
-	if event.AggregateType != "Order" {
-		return nil
-	}
-
-	domainEvent, err := orderes.FromESEvent(event)
-	if err != nil {
-		return err
-	}
-
-	var metricName string
-
-	switch domainEvent.(type) {
-	case orderv1.OrderPlaced:
-		metricName = "orders_placed_total"
-	case orderv1.OrderConfirmed:
-		metricName = "orders_confirmed_total"
-	default:
-		return nil
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO order_metrics_v1 (metric_name, metric_value)
-		VALUES ($1, 1)
-		ON CONFLICT (metric_name)
-		DO UPDATE SET metric_value = order_metrics_v1.metric_value + 1
-	`, metricName)
-	return err
+func (p *ProjectionMetrics) Handle(_ context.Context, _ *sql.Tx, event store.PersistedEvent) error {
+	projectedEventsTotal.WithLabelValues(
+		p.Name(),
+		event.AggregateType,
+		event.EventType,
+	).Inc()
+	return nil
 }
 ```
 
-Because this projection does not implement `AggregateTypes()`, it is global from the runtime's point of view. That is a good default when you want system-level counters or other cross-cutting views.
+Because this projection does not implement `AggregateTypes()`, it is global from the runtime's point of view. This is the simplest shape for cross-cutting telemetry, audit sinks, or integration publishers that care about the whole log.
 
 ### A scoped projection
 
@@ -758,6 +793,12 @@ Event stores are designed to be append-only. That makes them useful, but it also
 
 If there is any chance that a payload may carry PII, credentials, or other sensitive material, think about that before the event shape spreads through the system. See [`eventsalsa/encryption`](../encryption/) for patterns around envelope encryption, crypto-shredding, and sensitive lookups.
 
+:::caution
+Treat sensitive data in event payloads as a top-priority design concern.
+
+Once sensitive fields land in an append-only store, getting rid of them cleanly is much harder than fixing the problem up front. With event stores, this is a one-way street more often than teams expect.
+:::
+
 ### Separate write and read access
 
 `eventsalsa/store` works especially well with CQRS-style separation of responsibilities. One practical setup is:
@@ -773,8 +814,65 @@ One common arrangement is to keep the store tables under something like `event_s
 - a read/write role to the write side
 - a read-only role to query-facing code and reporting paths
 
+For teams that manage this at the migration level, the setup can look like this:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS event_store;
+CREATE SCHEMA IF NOT EXISTS read_models;
+
+CREATE ROLE app_event_writer LOGIN PASSWORD 'change-me';
+CREATE ROLE app_read_model_reader LOGIN PASSWORD 'change-me';
+
+GRANT USAGE ON SCHEMA event_store TO app_event_writer;
+GRANT USAGE ON SCHEMA read_models TO app_event_writer, app_read_model_reader;
+
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA event_store TO app_event_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA read_models TO app_event_writer;
+GRANT SELECT ON ALL TABLES IN SCHEMA read_models TO app_read_model_reader;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA read_models
+	GRANT SELECT ON TABLES TO app_read_model_reader;
+```
+
+The exact role model is yours to choose, but the pattern is worth keeping: the write side needs broader access than the read side, and read models are usually a good place to enforce a stricter read-only boundary.
+
 ### Plan for store growth
 
 High-traffic systems can grow the event log quickly. When that starts to matter, it is worth thinking about partitioning the events table by `global_position` and managing partitions with a tool such as `pg_partman`.
 
-That is outside the default migration, but it is a sensible operational step once retention, vacuum pressure, and index size begin to show up in production planning.
+At the very least, keep an eye on store size and position growth:
+
+```sql
+SELECT
+    pg_size_pretty(pg_total_relation_size('events')) AS events_total_size,
+    MAX(global_position) AS latest_global_position
+FROM events;
+```
+
+If you move toward partitioning, `pg_partman` gives you a practical way to automate range partitions on `global_position`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_partman;
+
+SELECT partman.create_parent(
+    p_parent_table := 'public.events',
+    p_control := 'global_position',
+    p_type := 'range',
+    p_interval := '1000000',
+    p_start_partition := '0'
+);
+```
+
+That is not part of the default migration, but it is a sensible operational step once retention, vacuum pressure, and index size begin to show up in production planning.
+
+## Transactional outbox
+
+`eventsalsa` does not currently ship a transactional outbox component. In practice, though, the store works well with that pattern because your append already happens inside a caller-owned SQL transaction.
+
+If you need to publish integration messages atomically with your event-store write, one pragmatic route is to combine the store with Watermill and its SQL-backed forwarder approach. The usual shape is:
+
+1. append your domain events
+2. write an outbox row in the same SQL transaction
+3. let a forwarder publish those rows to the external broker
+
+If you want to explore that pattern, Watermill's forwarder guide is a good starting point: [Publishing messages in transactions with the Watermill Forwarder](https://watermill.io/advanced/forwarder/).
