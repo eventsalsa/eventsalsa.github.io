@@ -22,7 +22,7 @@ The component uses envelope encryption. Instead of encrypting business data dire
 
 At runtime the flow is simple:
 
-- on encrypt, the module loads the active scope key, decrypts it with the system key, and encrypts the plaintext
+- on encrypt, the component loads the active scope key, decrypts it with the system key, and encrypts the plaintext
 - on decrypt, it loads the recorded scope-key version, resolves the matching system key, and decrypts the ciphertext
 
 That separation is what makes crypto-shredding and rotation practical. You do not need to rewrite historical events just because key material changed.
@@ -64,15 +64,17 @@ That file is suitable for `systemkey.NewKeyringFromFiles(...)`. In production, t
 Keep system-key files out of git. They are operational secrets, not application assets.
 :::
 
-## Install and generate the migration
+## Installation
 
-You only need one module download:
+Install the dependency once:
 
 ```bash
 go get github.com/eventsalsa/encryption
 ```
 
-The PostgreSQL key-store adapter lives inside the same Go module, so once the module is available you can import `github.com/eventsalsa/encryption/keystore/postgres` directly.
+The PostgreSQL key-store adapter ships with the same dependency, so you can import `github.com/eventsalsa/encryption/keystore/postgres` directly.
+
+## Generate the migration SQL
 
 The quickest path for the database migration is the stable `migrate-gen` command:
 
@@ -102,9 +104,9 @@ The defaults are:
 - schema: `infrastructure`
 - table: `encryption_keys`
 
-## Wire the module
+## Setup
 
-The module needs a keyring, a key store, and a cipher. If you import `cipher/aesgcm`, AES-256-GCM is registered as the default cipher automatically.
+Let's set up a keyring, a key store, and a cipher. If you import `cipher/aesgcm`, AES-256-GCM is registered as the default cipher automatically.
 
 ```go
 package main
@@ -313,9 +315,9 @@ func (s *RegistrationService) Register(
 
 If you want key creation and `Save(...)` to be atomic, run the service inside a unit of work and let the shared `context.Context` carry the transaction so both the encryption key store and the repository adapter see the same `*sql.Tx`.
 
-## Project decrypted data into an idempotent read model
+## Project decrypted data
 
-Encrypted payloads are not meant for querying directly. The usual pattern is to decrypt them inside a projection and write the cleartext only into the read model that genuinely needs it.
+Encrypted payloads are not meant for querying directly. The usual pattern is to decrypt them inside a projection and write the cleartext only into the read model that genuinely needs it. That read model should still keep enough state to remain idempotent during replay.
 
 For a user directory, the read model should keep the last applied global position so updates can remain idempotent:
 
@@ -450,7 +452,7 @@ If you want the delete path to retain the same last-position guard after the row
 For PII, destruction is usually the decisive operation. Revocation is not enough if the requirement is that historical personal data must become unreadable.
 :::
 
-## Rotate secrets without turning key rotation into a domain event
+## Rotate secrets
 
 Secrets have a different lifecycle. API tokens, webhook credentials, and similar values usually need rotation, and older ciphertext may still need to be replayed or audited later.
 
@@ -538,11 +540,11 @@ The important part is the split of responsibilities:
 - the aggregate records the business fact that the credential changed
 - the repository adapter only persists the resulting events
 
-## Rotate system keys deliberately
+## Rotate system keys
 
-System-key rotation is separate from scope-key rotation.
+System-key rotation is separate from scope-key rotation. Making a new system key active only affects new `CreateKey(...)` and `RotateKey(...)` calls. Existing stored scope keys keep the `system_key_id` they were written with, so retiring the old key also requires a rewrap step.
 
-When you mark a different system key as active in the keyring, new `CreateKey(...)` and `RotateKey(...)` calls start using that new key ID. Existing scope keys, however, still point at the `system_key_id` they were originally encrypted with.
+Start by loading both the old and new system keys into the keyring, then make the new key active for fresh writes:
 
 ```go
 keyring, err := systemkey.NewKeyringFromFiles(systemkey.FileKeyConfig{
@@ -554,19 +556,59 @@ keyring, err := systemkey.NewKeyringFromFiles(systemkey.FileKeyConfig{
 })
 ```
 
-Operationally, a full retirement of the old system key usually needs two stages:
+With both keys available, use the PostgreSQL administrative API to re-encrypt stored DEKs from the old system key to the new one. A dry run tells you how many rows still depend on the old key without changing anything:
 
-1. introduce the new system key and make it active
-2. re-encrypt existing stored scope keys that still reference the old `system_key_id`
+```go
+rewrapCipher := aesgcm.New()
 
-That second step is how you actually retire the old system key. At the moment, `eventsalsa/encryption` does **not** ship a built-in rewrap API for existing stored scope keys, so if you rotate system keys you should keep the old key available until you have either:
+preview, err := keyStore.RewrapSystemKeys(ctx, keyring, rewrapCipher, postgres.RewrapSystemKeysOptions{
+	FromSystemKeyID: "2025-01",
+	ToSystemKeyID:   "2025-04",
+	BatchSize:       500,
+	DryRun:          true,
+})
+if err != nil {
+	return err
+}
 
-- re-encrypted the affected scope keys with your own carefully reviewed tooling, or
-- intentionally destroyed the scopes that still depend on it
+log.Printf("matched=%d remaining=%d", preview.MatchedRows, preview.RemainingRows)
+```
+
+Then run the actual rewrap until `RemainingRows` reaches zero:
+
+```go
+result, err := keyStore.RewrapSystemKeys(ctx, keyring, rewrapCipher, postgres.RewrapSystemKeysOptions{
+	FromSystemKeyID: "2025-01",
+	ToSystemKeyID:   "2025-04",
+	BatchSize:       500,
+})
+if err != nil {
+	return err
+}
+
+log.Printf(
+	"rewrapped=%d skipped=%d remaining=%d batches=%d",
+	result.RewrappedRows,
+	result.SkippedRows,
+	result.RemainingRows,
+	result.Batches,
+)
+```
+
+This operation updates the stored encrypted DEK and `system_key_id` in place. It preserves the existing `(scope, scope_id, key_version)` identity, covers revoked rows as well as active rows, and does **not** rotate DEKs or re-encrypt application ciphertext.
+
+Operationally, the sequence is:
+
+1. load both system keys into the keyring
+2. make the new system key active for new writes
+3. run `RewrapSystemKeys` from the old key ID to the new key ID until `RemainingRows` is zero
+4. verify the result, then retire the old system key
+
+Keep the old key available until the rewrap is complete and you have confirmed that the remaining row count is zero. System-key rotation is an administrative operation around key storage, not a domain event and not a replacement for secret-level key rotation.
 
 ## Use hashing for sensitive identifiers and lookups
 
-Some values should be searchable or usable as stable identifiers without being readable. That is where the module's HMAC hasher fits.
+Some values should be searchable or usable as stable identifiers without being readable. That is where the component's HMAC hasher fits.
 
 One practical use case is deriving an aggregate ID from sensitive data such as a normalized email address or, in some systems, a username:
 
