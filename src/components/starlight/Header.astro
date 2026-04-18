@@ -1,5 +1,6 @@
 ---
 import BrandMark from '../BrandMark.astro';
+import ThemeToggleScript from '../ThemeToggleScript.astro';
 import Search from 'virtual:starlight/components/Search';
 
 const baseUrl = import.meta.env.BASE_URL;
@@ -27,59 +28,9 @@ const isDocs = pathname.startsWith(documentationHref) && !isChangelog;
 			</svg>
 		</a>
 		<button class="docs-theme-toggle" data-theme-toggle type="button">
-			<span class="material-symbols-outlined" data-theme-icon>light_mode</span>
+			<span class="material-symbols-outlined" data-theme-icon>brightness_auto</span>
 		</button>
 	</div>
 </div>
 
-<script is:inline>
-	(() => {
-		const storageKey = 'starlight-theme';
-		const getResolvedTheme = () => {
-			const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null;
-			if (stored === 'light' || stored === 'dark') return stored;
-			return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-		};
-
-		const applyTheme = (theme) => {
-			const resolved = theme === 'light' ? 'light' : 'dark';
-			document.documentElement.dataset.theme = resolved;
-			document.documentElement.style.colorScheme = resolved;
-			document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
-				const label = resolved === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
-				button.setAttribute('aria-label', label);
-				button.setAttribute('title', label);
-				const icon = button.querySelector('[data-theme-icon]');
-				if (icon) icon.textContent = resolved === 'light' ? 'dark_mode' : 'light_mode';
-			});
-			if (window.StarlightThemeProvider) {
-				window.StarlightThemeProvider.updatePickers(resolved);
-			}
-		};
-
-		const persistTheme = (theme) => {
-			if (typeof localStorage !== 'undefined') {
-				localStorage.setItem(storageKey, theme);
-			}
-			applyTheme(theme);
-		};
-
-		applyTheme(getResolvedTheme());
-
-		document.addEventListener('DOMContentLoaded', () => {
-			applyTheme(getResolvedTheme());
-		});
-
-		document.addEventListener('click', (event) => {
-			const button = event.target.closest('[data-theme-toggle]');
-			if (!button) return;
-			const nextTheme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-			persistTheme(nextTheme);
-		});
-
-		window.addEventListener('storage', (event) => {
-			if (event.key !== storageKey) return;
-			applyTheme(getResolvedTheme());
-		});
-	})();
-</script>
+<ThemeToggleScript />

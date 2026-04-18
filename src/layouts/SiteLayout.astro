@@ -1,5 +1,6 @@
 ---
 import '../styles/design-theme.css';
+import ThemeToggleScript from '../components/ThemeToggleScript.astro';
 
 interface Props {
 	title: string;
@@ -11,65 +12,16 @@ const {
 	description = 'Website and documentation for the eventsalsa event sourcing bundle for Go.',
 } = Astro.props;
 const faviconHref = `${import.meta.env.BASE_URL}favicon.svg`;
-const themeScript = String.raw`(() => {
-	const storageKey = 'starlight-theme';
-	const getResolvedTheme = () => {
-		const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null;
-		if (stored === 'light' || stored === 'dark') return stored;
-		return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-	};
-
-	const applyTheme = (theme) => {
-		const resolved = theme === 'light' ? 'light' : 'dark';
-		document.documentElement.dataset.theme = resolved;
-		document.documentElement.style.colorScheme = resolved;
-		document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
-			const label = resolved === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
-			button.setAttribute('aria-label', label);
-			button.setAttribute('title', label);
-			const icon = button.querySelector('[data-theme-icon]');
-			if (icon) icon.textContent = resolved === 'light' ? 'dark_mode' : 'light_mode';
-		});
-		if (window.StarlightThemeProvider) {
-			window.StarlightThemeProvider.updatePickers(resolved);
-		}
-	};
-
-	const persistTheme = (theme) => {
-		if (typeof localStorage !== 'undefined') {
-			localStorage.setItem(storageKey, theme);
-		}
-		applyTheme(theme);
-	};
-
-	applyTheme(getResolvedTheme());
-
-	document.addEventListener('DOMContentLoaded', () => {
-		applyTheme(getResolvedTheme());
-	});
-
-	document.addEventListener('click', (event) => {
-		const button = event.target.closest('[data-theme-toggle]');
-		if (!button) return;
-		const nextTheme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-		persistTheme(nextTheme);
-	});
-
-	window.addEventListener('storage', (event) => {
-		if (event.key !== storageKey) return;
-		applyTheme(getResolvedTheme());
-	});
-})();`;
 ---
 
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-theme-mode="system">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<link rel="icon" type="image/svg+xml" href={faviconHref} />
 		<meta name="description" content={description} />
-		<script is:inline set:html={themeScript}></script>
+		<ThemeToggleScript />
 		<title>{title}</title>
 	</head>
 	<body>

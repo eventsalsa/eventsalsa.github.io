@@ -1,0 +1,111 @@
+---
+const themeScript = String.raw`(() => {
+	const storageKey = 'starlight-theme';
+	const defaultMode = 'system';
+	const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+
+	const getStoredMode = () => {
+		const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null;
+		if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+		return defaultMode;
+	};
+
+	const resolveMode = (mode) => {
+		if (mode === 'light' || mode === 'dark') return mode;
+		return mediaQuery.matches ? 'light' : 'dark';
+	};
+
+	const getNextMode = (mode) => {
+		if (mode === 'system') return 'light';
+		if (mode === 'light') return 'dark';
+		return 'system';
+	};
+
+	const getModeLabel = (mode) => {
+		if (mode === 'light') return 'light';
+		if (mode === 'dark') return 'dark';
+		return 'system';
+	};
+
+	const getModeIcon = (mode) => {
+		if (mode === 'light') return 'light_mode';
+		if (mode === 'dark') return 'dark_mode';
+		return 'brightness_auto';
+	};
+
+	const updateButtons = (mode) => {
+		const nextMode = getNextMode(mode);
+		const label =
+			'Theme: ' +
+			getModeLabel(mode) +
+			' mode. Switch to ' +
+			getModeLabel(nextMode) +
+			' mode.';
+		document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
+			button.setAttribute('aria-label', label);
+			button.setAttribute('title', label);
+			button.setAttribute('data-theme-mode', mode);
+			const icon = button.querySelector('[data-theme-icon]');
+			if (icon) icon.textContent = getModeIcon(mode);
+		});
+	};
+
+	const applyThemeMode = (mode) => {
+		const normalized = mode === 'light' || mode === 'dark' || mode === 'system' ? mode : defaultMode;
+		const resolved = resolveMode(normalized);
+		document.documentElement.dataset.theme = resolved;
+		document.documentElement.dataset.themeMode = normalized;
+		document.documentElement.style.colorScheme = resolved;
+		updateButtons(normalized);
+		if (window.StarlightThemeProvider) {
+			window.StarlightThemeProvider.updatePickers(resolved);
+		}
+	};
+
+	const persistThemeMode = (mode) => {
+		const normalized = mode === 'light' || mode === 'dark' || mode === 'system' ? mode : defaultMode;
+		if (typeof localStorage !== 'undefined') {
+			if (normalized === defaultMode) {
+				localStorage.removeItem(storageKey);
+			} else {
+				localStorage.setItem(storageKey, normalized);
+			}
+		}
+		applyThemeMode(normalized);
+	};
+
+	const syncFromStorage = () => {
+		applyThemeMode(getStoredMode());
+	};
+
+	applyThemeMode(getStoredMode());
+
+	document.addEventListener('DOMContentLoaded', syncFromStorage);
+
+	document.addEventListener('click', (event) => {
+		const button = event.target.closest('[data-theme-toggle]');
+		if (!button) return;
+		const currentMode = document.documentElement.dataset.themeMode || getStoredMode();
+		persistThemeMode(getNextMode(currentMode));
+	});
+
+	window.addEventListener('storage', (event) => {
+		if (event.key !== storageKey) return;
+		syncFromStorage();
+	});
+
+	const handleSystemThemeChange = () => {
+		if (getStoredMode() === defaultMode) {
+			applyThemeMode(defaultMode);
+		}
+	};
+
+	if (typeof mediaQuery.addEventListener === 'function') {
+		mediaQuery.addEventListener('change', handleSystemThemeChange);
+	} else if (typeof mediaQuery.addListener === 'function') {
+		mediaQuery.addListener(handleSystemThemeChange);
+	}
+})();`;
+---
+
+<script is:inline set:html={themeScript}></script>
