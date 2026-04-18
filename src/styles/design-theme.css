@@ -187,6 +187,20 @@ header.header {
 	letter-spacing: -0.04em;
 }
 
+.brand-mark {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0;
+}
+
+.brand-mark__event {
+	color: var(--color-primary);
+}
+
+.brand-mark__salsa {
+	color: var(--color-on-background);
+}
+
 .docs-topbar,
 .docs-topbar-left,
 .docs-desktop-nav,
