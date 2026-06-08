@@ -320,6 +320,17 @@ If your consumers or workers connect through PgBouncer in transaction-pooling mo
 - **Transaction Pooling**: Fully supported for all core store operations (`Append`, `ReadEvents`, `ReadAggregateStream`). Since the store relies entirely on standard SQL statements executed within the caller-provided `pgx.Tx` transaction, it does not depend on session-level state.
 - **Session Pooling**: Fully supported.
 
+### Supported Query Execution Modes
+
+PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
+
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+
+- **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` is designed to be fully compatible with this mode; for instance, it automatically converts metadata byte parameters (`[]byte`) to standard string representations to ensure JSONB values bind correctly without binary description round-trips.
+- **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
+- **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
+- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+
 ### LISTEN/NOTIFY and PgBouncer
 
 If you enable transaction-level notifications using `WithNotifyChannel(...)`, the `NOTIFY` is emitted using `pg_notify(...)` within the transaction. This is transaction-safe and works under PgBouncer transaction pooling.

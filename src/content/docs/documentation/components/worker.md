@@ -357,6 +357,17 @@ To run the worker in a fully PgBouncer transaction-pooling compatible mode:
 2. Set the dispatcher strategy to `worker.DispatcherStrategyPoll`.
 3. Keep the worker tables (such as `worker_leader_election`) within your standard migration flows.
 
+### Supported Query Execution Modes
+
+PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
+
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+
+- **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` and `eventsalsa/worker` are designed to be fully compatible with this mode; they automatically convert metadata parameter bindings so that they bind correctly without binary description round-trips.
+- **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
+- **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
+- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+
 ## Polling behavior
 
 There are two different kinds of polling in the runtime, and it helps to separate them mentally.
