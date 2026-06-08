@@ -3,7 +3,7 @@ title: Store
 description: Append, read, and project events with eventsalsa/store.
 ---
 
-`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, aggregate stream reads, global log reads, consumer contracts for projections, and a PostgreSQL implementation that works inside your own `*sql.Tx`.
+`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, aggregate stream reads, global log reads, consumer contracts for projections, and a PostgreSQL implementation that works inside your own transaction (`pgx.Tx`).
 
 That shape matters. The store does not try to own your domain model, your application services, or your transaction boundaries. It gives you a reliable event log and the primitives around it, then gets out of the way.
 
@@ -101,7 +101,9 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/store"
 	"github.com/eventsalsa/store/postgres"
@@ -115,7 +117,7 @@ type CommandMetadata struct {
 }
 
 type OrderRepository struct {
-	db         *sql.DB
+	db         *pgxpool.Pool
 	eventStore *postgres.Store
 }
 
@@ -137,11 +139,11 @@ func (r *OrderRepository) Save(ctx context.Context, order *Order, meta CommandMe
 		expected = store.Exact(order.Version)
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	result, err := r.eventStore.Append(ctx, tx, expected, events)
 	if err != nil {
@@ -150,7 +152,7 @@ func (r *OrderRepository) Save(ctx context.Context, order *Order, meta CommandMe
 
 	order.Version = result.ToVersion()
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
@@ -306,8 +308,34 @@ Here is what each option controls:
 :::caution
 `WithNotifyChannel(...)` is a good fit when listeners hold real PostgreSQL connections and can safely `LISTEN` on the same database.
 
-If your consumers sit behind PgBouncer or a similar pooler in transaction-pooling mode, rely on the worker's polling strategy instead of `LISTEN/NOTIFY`. Poolers can break long-lived listener connections in ways that make notification delivery unreliable.
+If your consumers or workers connect through PgBouncer in transaction-pooling mode, they should rely on the worker's polling strategy instead of the notify-based wakeup, or connect the listener connection to a session-pooled port or directly to the database.
 :::
+
+## PgBouncer and Transaction Pooling
+
+`eventsalsa/store` is fully compatible with connection poolers like PgBouncer.
+
+### Supported Modes
+
+- **Transaction Pooling**: Fully supported for all core store operations (`Append`, `ReadEvents`, `ReadAggregateStream`). Since the store relies entirely on standard SQL statements executed within the caller-provided `pgx.Tx` transaction, it does not depend on session-level state.
+- **Session Pooling**: Fully supported.
+
+### Supported Query Execution Modes
+
+PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
+
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+
+- **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` is designed to be fully compatible with this mode; for instance, it automatically converts metadata byte parameters (`[]byte`) to standard string representations to ensure JSONB values bind correctly without binary description round-trips.
+- **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
+- **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
+- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+
+### LISTEN/NOTIFY and PgBouncer
+
+If you enable transaction-level notifications using `WithNotifyChannel(...)`, the `NOTIFY` is emitted using `pg_notify(...)` within the transaction. This is transaction-safe and works under PgBouncer transaction pooling.
+
+However, receiving notifications (`LISTEN`) is a session-level operation. Any process listening for wakeups (such as the notify-based worker dispatcher) must bypass transaction pooling, either by using PgBouncer in session pooling mode or by connecting directly to the database.
 
 ## Reading streams
 
@@ -334,18 +362,18 @@ Those cases are where read models and projections come in.
 `ReadAggregateStream` returns the events for one aggregate instance ordered by `aggregate_version`:
 
 ```go
-tx, err := db.BeginTx(ctx, nil)
+tx, err := db.Begin(ctx)
 if err != nil {
 	return err
 }
-defer tx.Rollback() //nolint:errcheck
+defer tx.Rollback(ctx) //nolint:errcheck
 
 stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
 if err != nil {
 	return err
 }
 
-if err := tx.Commit(); err != nil {
+if err := tx.Commit(ctx); err != nil {
 	return err
 }
 ```
@@ -372,19 +400,20 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/acme/shop/internal/domain/order"
 	orderes "github.com/acme/shop/internal/infrastructure/order/persistence/generated"
 )
 
 func (r *OrderRepository) Load(ctx context.Context, orderID string) (*order.Order, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	stream, err := r.eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
 	if err != nil {
@@ -405,7 +434,7 @@ func (r *OrderRepository) Load(ctx context.Context, orderID string) (*order.Orde
 
 	aggregate.Version = stream.Version()
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -495,7 +524,7 @@ func (p *ProjectionMetrics) Name() string {
 	return "projection_metrics"
 }
 
-func (p *ProjectionMetrics) Handle(_ context.Context, _ *sql.Tx, event store.PersistedEvent) error {
+func (p *ProjectionMetrics) Handle(_ context.Context, _ pgx.Tx, event store.PersistedEvent) error {
 	projectedEventsTotal.WithLabelValues(
 		p.Name(),
 		event.AggregateType,
@@ -538,7 +567,7 @@ func (p *OrderOverviewProjection) AggregateTypes() []string {
 	return []string{"Order"}
 }
 
-func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
+func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
 	domainEvent, err := orderes.FromESEvent(event)
 	if err != nil {
 		return err
@@ -546,7 +575,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 
 	switch e := domainEvent.(type) {
 	case orderv1.OrderPlaced:
-		_, err = tx.ExecContext(ctx, `
+		_, err = tx.Exec(ctx, `
 			INSERT INTO order_overview_v1 (
 				order_id,
 				customer_id,
@@ -567,7 +596,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 		return err
 
 	case orderv1.OrderLineAdded:
-		_, err = tx.ExecContext(ctx, `
+		_, err = tx.Exec(ctx, `
 			UPDATE order_overview_v1
 			SET total_cents = total_cents + $2,
 			    line_count = line_count + $3,
@@ -578,7 +607,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 		return err
 
 	case orderv1.OrderConfirmed:
-		_, err = tx.ExecContext(ctx, `
+		_, err = tx.Exec(ctx, `
 			UPDATE order_overview_v1
 			SET status = 'confirmed',
 			    version = $2
@@ -613,7 +642,7 @@ for _, event := range result.Events {
 	}
 }
 
-if err := tx.Commit(); err != nil {
+if err := tx.Commit(ctx); err != nil {
 	return err
 }
 ```
@@ -699,27 +728,27 @@ One practical way to measure it is:
 For example:
 
 ```go
-func ProjectionLag(ctx context.Context, tx *sql.Tx, eventStore store.GlobalPositionReader, projectionName string) (int64, error) {
+func ProjectionLag(ctx context.Context, tx pgx.Tx, eventStore store.GlobalPositionReader, projectionName string) (int64, error) {
 	latest, err := eventStore.GetLatestGlobalPosition(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
 
-	var checkpoint sql.NullInt64
-	err = tx.QueryRowContext(ctx, `
+	var checkpoint *int64
+	err = tx.QueryRow(ctx, `
 		SELECT last_processed_position
 		FROM projection_checkpoint
 		WHERE projection_name = $1
 	`, projectionName).Scan(&checkpoint)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
 
-	if !checkpoint.Valid {
+	if checkpoint == nil {
 		return latest, nil
 	}
 
-	lag := latest - checkpoint.Int64
+	lag := latest - *checkpoint
 	if lag < 0 {
 		return 0, nil
 	}

@@ -106,7 +106,7 @@ func (p *OrderOverviewProjection) AggregateTypes() []string {
 	return []string{"Order"}
 }
 
-func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
+func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
 	_ = ctx
 	_ = tx
 	_ = event
@@ -121,13 +121,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"os/signal"
 	"syscall"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/store/consumer"
 	storepostgres "github.com/eventsalsa/store/postgres"
@@ -135,9 +134,12 @@ import (
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	connStr := "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable"
 
-	db, err := sql.Open("postgres", connStr)
+	db, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -156,9 +158,6 @@ func main() {
 		worker.WithBatchSize(100),
 		worker.WithPollInterval(500*time.Millisecond),
 	)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if err := w.Start(ctx); err != nil {
 		log.Fatal(err)
@@ -190,6 +189,8 @@ w := worker.New(
 	worker.WithStaleGapThreshold(30*time.Second),
 	worker.WithStaleGapHarborLag(8),
 	worker.WithDispatcherStrategy(worker.DispatcherStrategyPoll),
+	worker.WithLeaderStrategy(worker.LeaderStrategyLease),
+	worker.WithLeaderElectionTable("worker_leader_election"),
 	worker.WithLogger(logger),
 )
 ```
@@ -213,6 +214,8 @@ For reference, the full option set is:
 | `WithDispatcherStrategy(strategy)` | `poll` | Wakeup strategy: `poll` or `notify`. |
 | `WithNotifyConnectionString(connStr)` | empty | Dedicated PostgreSQL connection string for `LISTEN`/`NOTIFY`. |
 | `WithNotifyChannel(channel)` | `worker_events` | Notification channel used by the notify dispatcher. |
+| `WithLeaderStrategy(strategy)` | `advisory` | Leader election strategy: `advisory` or `lease`. |
+| `WithLeaderElectionTable(name)` | `worker_leader_election` | Override leader election lease table name. |
 | `WithLogger(logger)` | `store.NoOpLogger{}` | Structured logging integration. |
 | `WithWorkerNodesTable(name)` | `worker_nodes` | Override worker-registration table name. |
 | `WithConsumerAssignmentsTable(name)` | `consumer_assignments` | Override assignment table name. |
@@ -310,6 +313,61 @@ Use the notify dispatcher only when the listener connection preserves PostgreSQL
 If your workers connect through PgBouncer in transaction-pooling mode, or through another proxy that does not preserve long-lived session semantics, prefer the poll dispatcher. `LISTEN`/`NOTIFY` is session-oriented, and session-unaware pooling is the wrong place to bet your wakeup path.
 :::
 
+## Leader election strategies
+
+When scaling `eventsalsa/worker` across multiple nodes, the runtime uses a leader node to coordinate consumer assignments and rebalancing. You can choose between two leader election strategies based on your PostgreSQL deployment model and connection pooling setup:
+
+### Advisory lock strategy (Default)
+
+`worker.LeaderStrategyAdvisory` coordinates leadership using PostgreSQL session-level advisory locks (`pg_try_advisory_lock`).
+
+- **Pros**: Extremely lightweight, zero database writes to maintain leadership, and releases the lock immediately when a node goes down or its connection drops.
+- **Cons**: Requires a dedicated, persistent session-level connection. It is **incompatible** with connection poolers like PgBouncer in transaction pooling mode, as transaction pooling does not guarantee connection/session affinity.
+
+### Lease-based strategy (PgBouncer-safe)
+
+`worker.LeaderStrategyLease` coordinates leadership through a central lease table (`worker_leader_election`) using short-lived transactions. The leader periodically heartbeats/renews its lease record.
+
+- **Pros**: Fully safe for deployments running behind PgBouncer in transaction pooling mode. Does not require persistent connection affinity.
+- **Cons**: Requires periodic write transactions to renew the lease record. If a leader crashes, other nodes can take over leadership only after the lease duration (`HeartbeatTimeout`) has expired.
+
+To use the lease strategy, configure your worker like this:
+
+```go
+w := worker.New(
+	db,
+	eventStore,
+	consumers,
+	worker.WithLeaderStrategy(worker.LeaderStrategyLease),
+)
+```
+
+## PgBouncer and Transaction Pooling
+
+Deploying event-sourced worker processes behind connection proxies requires choosing the right strategies:
+
+| Worker Feature | Advisory Lock / Session-based | Lease-based / Polling | PgBouncer Transaction Pooling Compatibility |
+| --- | --- | --- | --- |
+| **Leader Election** | `worker.LeaderStrategyAdvisory` | `worker.LeaderStrategyLease` | Compatible only with **Lease-based strategy**. |
+| **Wakeup Dispatcher**| `worker.DispatcherStrategyNotify` | `worker.DispatcherStrategyPoll` | Compatible only with **Poll strategy** (or if notify connection bypasses transaction pooling). |
+| **Consumer Processing**| N/A | N/A | Fully compatible. Consumers run within standard database transactions. |
+
+To run the worker in a fully PgBouncer transaction-pooling compatible mode:
+1. Set the leader strategy to `worker.LeaderStrategyLease`.
+2. Set the dispatcher strategy to `worker.DispatcherStrategyPoll`.
+3. Keep the worker tables (such as `worker_leader_election`) within your standard migration flows.
+
+### Supported Query Execution Modes
+
+PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
+
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+
+- **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` and `eventsalsa/worker` are designed to be fully compatible with this mode; they automatically convert metadata parameter bindings so that they bind correctly without binary description round-trips.
+- **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
+- **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
+- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+
 ## Polling behavior
 
 There are two different kinds of polling in the runtime, and it helps to separate them mentally.
@@ -344,7 +402,7 @@ At runtime, one worker process does more than "call Handle in a loop". The lifec
 2. register itself in `worker_nodes`
 3. ensure consumers and checkpoints exist in the worker metadata tables
 4. start the dispatcher
-5. participate in leader election using a PostgreSQL advisory lock
+5. participate in leader election (using either session-level advisory locks or a lease table)
 6. if elected leader, rebalance consumer ownership across the current live workers
 7. start consumer goroutines only for the consumers currently assigned to this worker
 8. keep heartbeating until shutdown

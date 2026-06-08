@@ -87,7 +87,7 @@ Start with the event store itself and a PostgreSQL driver:
 
 ```bash
 go get github.com/eventsalsa/store
-go get github.com/lib/pq
+go get github.com/jackc/pgx/v5
 ```
 
 `eventsalsa/store` is PostgreSQL-backed. The store API is transaction-first, so you stay in control of how database work is grouped and committed.
@@ -121,20 +121,20 @@ package main
 
 import (
 	"context"
-	"database/sql"
 
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/store/postgres"
 )
 
-func openStore(ctx context.Context) (*sql.DB, *postgres.Store, error) {
-	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
+func openStore(ctx context.Context) (*pgxpool.Pool, *postgres.Store, error) {
+	db, err := pgxpool.New(ctx, "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.Ping(ctx); err != nil {
+		db.Close()
 		return nil, nil, err
 	}
 
@@ -295,14 +295,15 @@ package main
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/store"
 )
 
-func createOrder(ctx context.Context, db *sql.DB, eventStore store.EventStore) error {
+func createOrder(ctx context.Context, db *pgxpool.Pool, eventStore store.EventStore) error {
 	orderID := uuid.NewString()
 
 	events, err := buildOrderEvents(orderID)
@@ -310,18 +311,18 @@ func createOrder(ctx context.Context, db *sql.DB, eventStore store.EventStore) e
 		return err
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	_, err = eventStore.Append(ctx, tx, store.NoStream(), events)
 	if err != nil {
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
@@ -338,20 +339,20 @@ When you append later events to an existing order, you normally use `store.Exact
 Reading a stream is straightforward. You ask for one aggregate by type and ID:
 
 ```go
-tx, err := db.BeginTx(ctx, nil)
-if err != nil {
-	return err
-}
-defer tx.Rollback() //nolint:errcheck
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
-if err != nil {
-	return err
-}
+	stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
+	if err != nil {
+		return err
+	}
 
-if err := tx.Commit(); err != nil {
-	return err
-}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
 ```
 
 That returns the complete ordered history for the order. You can also read only part of the stream by version range:
@@ -459,8 +460,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/eventsalsa/store"
 	"github.com/eventsalsa/store/consumer"
@@ -476,7 +478,7 @@ func (p *OrderOverviewProjection) AggregateTypes() []string {
 	return []string{"Order"}
 }
 
-func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
+func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
 	switch event.EventType {
 	case "OrderPlaced":
 		var data OrderPlaced
@@ -484,7 +486,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 			return err
 		}
 
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.Exec(ctx, `
 			INSERT INTO order_overview_v1 (
 				order_id,
 				customer_id,
@@ -510,7 +512,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 			return err
 		}
 
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.Exec(ctx, `
 			UPDATE order_overview_v1
 			SET total_cents = total_cents + $2,
 			    line_count = line_count + $3,
@@ -521,7 +523,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 		return err
 
 	case "OrderConfirmed":
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.Exec(ctx, `
 			UPDATE order_overview_v1
 			SET status = 'confirmed',
 			    version = $2
@@ -546,11 +548,11 @@ If you run that projection inside the same transaction as the append, the event 
 ```go
 projection := &OrderOverviewProjection{}
 
-tx, err := db.BeginTx(ctx, nil)
+tx, err := db.Begin(ctx)
 if err != nil {
 	return err
 }
-defer tx.Rollback() //nolint:errcheck
+defer tx.Rollback(ctx) //nolint:errcheck
 
 result, err := eventStore.Append(ctx, tx, store.NoStream(), events)
 if err != nil {
@@ -563,7 +565,7 @@ for _, event := range result.Events {
 	}
 }
 
-if err := tx.Commit(); err != nil {
+if err := tx.Commit(ctx); err != nil {
 	return err
 }
 ```
