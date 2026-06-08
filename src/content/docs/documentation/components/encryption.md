@@ -112,17 +112,19 @@ Let's set up a keyring, a key store, and a cipher. If you import `cipher/aesgcm`
 package main
 
 import (
-	"database/sql"
+	"context"
 	"log"
 
 	"github.com/eventsalsa/encryption"
 	_ "github.com/eventsalsa/encryption/cipher/aesgcm"
 	"github.com/eventsalsa/encryption/keystore/postgres"
 	"github.com/eventsalsa/encryption/systemkey"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
-	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, "postgres://postgres:postgres@localhost:5432/eventsalsa?sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -149,18 +151,18 @@ func main() {
 }
 ```
 
-By default the PostgreSQL key store uses `*sql.DB`. That is fine for simple setups. In an event-sourced application, though, you usually want key creation, encryption-related writes, and event appends to live inside the same transaction.
+By default the PostgreSQL key store uses `*pgxpool.Pool`. That is fine for simple setups. In an event-sourced application, though, you usually want key creation, encryption-related writes, and event appends to live inside the same transaction.
 
-### Use an existing `*sql.Tx`
+### Use an existing `pgx.Tx`
 
 The PostgreSQL key store checks the context for a transaction first. If you attach one with `keystore.WithTx`, all reads and writes go through that transaction instead of the pool.
 
 ```go
-tx, err := db.BeginTx(ctx, nil)
+tx, err := db.Begin(ctx)
 if err != nil {
 	return err
 }
-defer tx.Rollback()
+defer tx.Rollback(ctx)
 
 ctx = keystore.WithTx(ctx, tx)
 ```
@@ -313,7 +315,7 @@ func (s *RegistrationService) Register(
 }
 ```
 
-If you want key creation and `Save(...)` to be atomic, run the service inside a unit of work and let the shared `context.Context` carry the transaction so both the encryption key store and the repository adapter see the same `*sql.Tx`.
+If you want key creation and `Save(...)` to be atomic, run the service inside a unit of work and let the shared `context.Context` carry the transaction so both the encryption key store and the repository adapter see the same `pgx.Tx`.
 
 ## Project decrypted data
 
@@ -342,8 +344,9 @@ package projections
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/eventsalsa/encryption/pii"
 	"github.com/eventsalsa/store"
@@ -360,7 +363,7 @@ type UserDirectoryProjection struct {
 	userPII *pii.Adapter[UserID]
 }
 
-func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
+func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
 	domainEvent, err := userevents.FromESEvent(event)
 	if err != nil {
 		return fmt.Errorf("decode event: %w", err)
@@ -383,7 +386,7 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 			return fmt.Errorf("decrypt last name: %w", err)
 		}
 
-		_, err = tx.ExecContext(ctx, `
+		_, err = tx.Exec(ctx, `
 			INSERT INTO read_model.user_directory_v1 (
 				user_id,
 				email,
@@ -425,7 +428,7 @@ You do not need a large example here. The rule is simple:
 On the read side, the deletion branch simply removes the row:
 
 ```go
-func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event store.PersistedEvent) error {
+func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
 	domainEvent, err := userevents.FromESEvent(event)
 	if err != nil {
 		return fmt.Errorf("decode event: %w", err)
@@ -433,7 +436,7 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx *sql.Tx, event 
 
 	switch e := domainEvent.(type) {
 	case userv1.UserDeleted:
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.Exec(ctx, `
 			DELETE FROM read_model.user_directory_v1
 			WHERE user_id = $1
 		`, e.UserID)
