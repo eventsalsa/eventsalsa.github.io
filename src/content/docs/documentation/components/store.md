@@ -324,12 +324,13 @@ If your consumers or workers connect through PgBouncer in transaction-pooling mo
 
 PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
 
-To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on named server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
 
 - **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` is designed to be fully compatible with this mode; for instance, it automatically converts metadata byte parameters (`[]byte`) to standard string representations to ensure JSONB values bind correctly without binary description round-trips.
 - **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
 - **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
-- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+- **Cache Describe Mode (`pgx.QueryExecModeCacheDescribe`)**: **Fully Supported**. Caches statement result descriptions using unnamed prepared statements (`Parse "" ...`), which are transaction-scoped and safe under PgBouncer transaction pooling.
+- **Cache Statement Mode (`pgx.QueryExecModeCacheStatement`)**: **Incompatible** with PgBouncer transaction pooling because it uses named prepared statements. Do not use this mode if routing through a transaction-pooled proxy.
 
 ### LISTEN/NOTIFY and PgBouncer
 

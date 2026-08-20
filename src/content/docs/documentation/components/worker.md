@@ -344,7 +344,7 @@ w := worker.New(
 
 ## PgBouncer and Transaction Pooling
 
-Deploying event-sourced worker processes behind connection proxies requires choosing the right strategies:
+Deploying event-sourced worker processes behind connection proxies requires choosing the right strategies. Note that **both** lease-based leader election (`worker.LeaderStrategyLease`) and the poll dispatcher (`worker.DispatcherStrategyPoll`) are required for full PgBouncer transaction-pooling compatibility:
 
 | Worker Feature | Advisory Lock / Session-based | Lease-based / Polling | PgBouncer Transaction Pooling Compatibility |
 | --- | --- | --- | --- |
@@ -357,16 +357,19 @@ To run the worker in a fully PgBouncer transaction-pooling compatible mode:
 2. Set the dispatcher strategy to `worker.DispatcherStrategyPoll`.
 3. Keep the worker tables (such as `worker_leader_election`) within your standard migration flows.
 
+Both options (1 and 2) are required simultaneously when operating behind a transaction-pooled proxy.
+
 ### Supported Query Execution Modes
 
 PgBouncer in transaction pooling mode is incompatible with server-side prepared statements because different transactions within the same client session can be routed to different database connections. 
 
-To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
+To support transaction pooling, you must configure `pgx` to use a query execution mode that does not rely on named server-side prepared statements. `eventsalsa` supports the following execution modes configured on your `pgxpool.Config` (via `ConnConfig.DefaultQueryExecMode`):
 
 - **Simple Protocol Mode (`pgx.QueryExecModeSimpleProtocol`)**: **Fully Supported**. This mode executes queries without preparing them first. `eventsalsa/store` and `eventsalsa/worker` are designed to be fully compatible with this mode; they automatically convert metadata parameter bindings so that they bind correctly without binary description round-trips.
 - **Extended Protocol Exec Mode (`pgx.QueryExecModeExec`)**: **Fully Supported**. This mode uses the extended protocol to bind parameters but skips preparing the statement on the server.
 - **Describe Exec Mode (`pgx.QueryExecModeDescribeExec`)**: **Fully Supported**.
-- **Statement Caching Modes (`QueryExecModeCacheStatement` / `QueryExecModeCacheDescribe`)**: **Incompatible** with PgBouncer transaction pooling. Do not use these if routing through a transaction-pooled proxy.
+- **Cache Describe Mode (`pgx.QueryExecModeCacheDescribe`)**: **Fully Supported**. Caches statement result descriptions using unnamed prepared statements (`Parse "" ...`), which are transaction-scoped and safe under PgBouncer transaction pooling.
+- **Cache Statement Mode (`pgx.QueryExecModeCacheStatement`)**: **Incompatible** with PgBouncer transaction pooling because it uses named prepared statements. Do not use this mode if routing through a transaction-pooled proxy.
 
 ## Polling behavior
 
