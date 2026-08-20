@@ -3,25 +3,25 @@ title: Store
 description: Append, read, and project events with eventsalsa/store.
 ---
 
-`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, aggregate stream reads, global log reads, consumer contracts for projections, and a PostgreSQL implementation that works inside your own transaction (`pgx.Tx`).
+`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, stream reads, global log reads, consumer contracts for projections, and a PostgreSQL implementation that works inside your own transaction (`pgx.Tx`).
 
 That shape matters. The store does not try to own your domain model, your application services, or your transaction boundaries. It gives you a reliable event log and the primitives around it, then gets out of the way.
 
 At a practical level, the component covers:
 
-- appending one or more events for a single aggregate instance
-- optimistic concurrency through expected versions
-- reading an aggregate stream back in version order
+- appending one or more events for a single stream instance
+- optimistic concurrency through expected versions and stream heads
+- reading a stream back in version order
 - reading the global log for consumers and projections
 - projection contracts through the `consumer` package
-- migration generation for the PostgreSQL schema
+- migration generation for standard and partitioned PostgreSQL schemas
 - event mapping code generation through `eventmap-gen`
 
 ## Appending events
 
 Appending is the write operation at the heart of the store. You construct one or more `store.Event` values, open a SQL transaction, and call `Append`.
 
-Every append is scoped to one aggregate instance. In other words, the events in a single append call must all share the same `AggregateType` and `AggregateID`. That matches the shape of a command in a typical event-sourced system: one command loads one aggregate, makes a decision, emits one or more events, and commits them atomically.
+Every append is scoped to one stream instance. In other words, the events in a single append call must all share the same `StreamType` and `StreamID`. That matches the shape of a command in a typical event-sourced system: one command loads one aggregate, makes a decision, emits one or more events, and commits them atomically to the stream.
 
 In a healthy codebase, this usually lives in a repository adapter or persistence adapter rather than directly in an HTTP handler or service layer.
 
@@ -31,9 +31,9 @@ Before persistence, you work with `store.Event`. After persistence, the store re
 
 | Field | Meaning |
 | --- | --- |
-| `AggregateType` | The logical type of the aggregate, for example `Order`. Keep it stable. |
-| `AggregateID` | The identifier of one aggregate instance, for example an order ID. |
-| `AggregateVersion` | The event's position inside that aggregate stream. The store assigns it during append. |
+| `StreamType` | The logical type of the stream, for example `Order`. Keep it stable. |
+| `StreamID` | The identifier of one stream instance, for example an order ID. |
+| `StreamVersion` | The event's position inside that stream. The store assigns it during append. |
 | `GlobalPosition` | The event's position in the global log. The store assigns it during append. Useful for consumers and projections. |
 | `EventType` | The logical event name, for example `OrderPlaced`. |
 | `EventVersion` | The schema version of the payload for that event type. |
@@ -47,10 +47,10 @@ Before persistence, you work with `store.Event`. After persistence, the store re
 
 Two values deserve special attention because they are easy to conflate:
 
-- **`AggregateVersion`** is local to one aggregate stream. It starts at `1` for the first event of a given aggregate and then increases by one for each subsequent event in that stream.
+- **`StreamVersion`** is local to one stream. It starts at `1` for the first event of a given stream and then increases by one for each subsequent event in that stream.
 - **`GlobalPosition`** is global to the store. It is assigned from the event log sequence and is useful for reading the whole log in order.
 
-If an order is currently at aggregate version `7` and a command appends two new events, those events will be stored at aggregate versions `8` and `9`. At the same time, they also get global positions in the shared event log.
+If an order stream is currently at stream version `7` and a command appends two new events, those events will be stored at stream versions `8` and `9`. At the same time, they also get global positions in the shared event log.
 
 :::caution
 `global_position` is useful for consumers, but it is **not** a safe naive checkpoint frontier under concurrent writers. PostgreSQL sequences guarantee uniqueness, not commit order. A lower position can become visible after a higher one has already been returned.
@@ -58,7 +58,7 @@ If an order is currently at aggregate version `7` and a command appends two new 
 
 ### Optimistic concurrency
 
-The store uses expected versions for optimistic concurrency. When you append, you tell the store what version you believe the aggregate is currently at. If reality does not match that expectation, the append fails with `store.ErrOptimisticConcurrency`.
+The store uses expected versions for optimistic concurrency. When you append, you tell the store what version you believe the stream is currently at. If reality does not match that expectation, the append fails with `store.ErrOptimisticConcurrency`.
 
 That is the normal safety mechanism for command handling in event sourcing. You load the aggregate, make a decision based on its current state, and append only if nobody else has changed that stream in the meantime.
 
@@ -66,11 +66,11 @@ That is the normal safety mechanism for command handling in event sourcing. You 
 
 | Call | Meaning | Typical use |
 | --- | --- | --- |
-| `store.NoStream()` | The aggregate must not exist yet. | Creating a new aggregate. |
-| `store.Exact(n)` | The aggregate must currently be at version `n`. | Normal updates to an existing aggregate. |
+| `store.NoStream()` | The stream must not exist yet. | Creating a new stream (e.g., initial aggregate creation). |
+| `store.Exact(n)` | The stream must currently be at version `n`. | Normal updates to an existing stream. |
 | `store.Any()` | Skip version validation entirely. | Specialized cases such as imports or internal tooling. |
 
-`NoStream()` is the clearest way to express aggregate creation, even though `Exact(0)` is equivalent under the hood.
+`NoStream()` is the clearest way to express stream creation, even though `Exact(0)` is equivalent under the hood.
 
 In practice, optimistic concurrency looks like this:
 
@@ -88,9 +88,19 @@ if err != nil {
 newVersion := result.ToVersion()
 ```
 
-If two requests both load an order at version `7`, one of them can win and append version `8`. The other still tries `store.Exact(7)`, sees that the aggregate has moved on, and gets `store.ErrOptimisticConcurrency` instead of silently writing over someone else's decision.
+If two requests both load an order at version `7`, one of them can win and append version `8`. The other still tries `store.Exact(7)`, sees that the stream has moved on, and gets `store.ErrOptimisticConcurrency` instead of silently writing over someone else's decision.
 
-The PostgreSQL schema reinforces this with a unique constraint on `(aggregate_type, aggregate_id, aggregate_version)`. That database-level check is the safety net in case two transactions race between the version check and the insert.
+#### Authoritative `stream_heads` reservation
+
+`eventsalsa/store` enforces optimistic concurrency by atomically checking and reserving the version range on the `stream_heads` table inside the caller's transaction before inserting any events:
+
+1. **`NoStream()` / `Exact(0)`**: Executes an `INSERT INTO stream_heads (stream_type, stream_id, stream_version, updated_at) VALUES ($1, $2, $numEvents, NOW())`. If the stream head row already exists, PostgreSQL raises a primary key conflict on `(stream_type, stream_id)`, which the store translates to `store.ErrOptimisticConcurrency`.
+2. **`Exact(n)`**: Executes an `UPDATE stream_heads SET stream_version = stream_version + $numEvents, updated_at = NOW() WHERE stream_type = $1 AND stream_id = $2 AND stream_version = $n`. If the stream does not exist or its current version does not match `n`, zero rows are updated and the store returns `store.ErrOptimisticConcurrency`.
+3. **`Any()`**: Executes an atomic UPSERT (`INSERT INTO stream_heads ... ON CONFLICT (stream_type, stream_id) DO UPDATE SET stream_version = stream_heads.stream_version + EXCLUDED.stream_version RETURNING stream_version`), allocating consecutive version numbers even under concurrent writes.
+
+Because version validation executes against `stream_heads` within the caller's transaction, a row-level lock on `(stream_type, stream_id)` is held until commit or rollback. This ensures strict serializability per stream and prevents race conditions between validation and insertion.
+
+On standard unpartitioned tables, the database-level `UNIQUE (stream_type, stream_id, stream_version)` constraint on `events` serves as a secondary safety net. On partitioned tables where cross-partition unique constraints cannot span the entire table, `stream_heads` provides 100% authoritative concurrency control.
 
 ### A repository adapter example
 
@@ -286,7 +296,7 @@ The PostgreSQL implementation lives in `github.com/eventsalsa/store/postgres`. M
 ```go
 config := postgres.NewStoreConfig(
 	postgres.WithEventsTable("events"),
-	postgres.WithAggregateHeadsTable("aggregate_heads"),
+	postgres.WithStreamHeadsTable("stream_heads"),
 	postgres.WithNotifyChannel("eventsalsa_events"),
 	postgres.WithLogger(ZapLogger{logger: zapLogger}),
 )
@@ -299,7 +309,7 @@ Here is what each option controls:
 | Option | Meaning | When to change it |
 | --- | --- | --- |
 | `WithEventsTable(...)` | Sets the event log table name. | Rename when your schema conventions require a different table name. |
-| `WithAggregateHeadsTable(...)` | Sets the aggregate head table name used for O(1) version lookups. | Rename when your schema conventions require it. |
+| `WithStreamHeadsTable(...)` | Sets the stream heads table name used for O(1) version lookups and atomic optimistic concurrency control. | Rename when your schema conventions require it. |
 | `WithNotifyChannel(...)` | Sends a PostgreSQL `NOTIFY` on successful append. | Useful when consumers wake up through `LISTEN/NOTIFY` instead of polling. |
 | `WithLogger(...)` | Plugs in store-level logging. | Useful for operational visibility in production and troubleshooting. |
 
@@ -317,7 +327,7 @@ If your consumers or workers connect through PgBouncer in transaction-pooling mo
 
 ### Supported Modes
 
-- **Transaction Pooling**: Fully supported for all core store operations (`Append`, `ReadEvents`, `ReadAggregateStream`). Since the store relies entirely on standard SQL statements executed within the caller-provided `pgx.Tx` transaction, it does not depend on session-level state.
+- **Transaction Pooling**: Fully supported for all core store operations (`Append`, `ReadEvents`, `ReadStream`). Since the store relies entirely on standard SQL statements executed within the caller-provided `pgx.Tx` transaction, it does not depend on session-level state.
 - **Session Pooling**: Fully supported.
 
 ### Supported Query Execution Modes
@@ -340,7 +350,7 @@ However, receiving notifications (`LISTEN`) is a session-level operation. Any pr
 
 ## Reading streams
 
-Reading an aggregate stream is what you do when you want the most accurate view of one aggregate's state. That is the normal path for command handling: load the stream, replay it into an entity, make a decision, and then append new events with an expected version derived from that entity.
+Reading a stream is what you do when you want the most accurate view of one aggregate's state. That is the normal path for command handling: load the stream, replay it into an entity, make a decision, and then append new events with an expected version derived from that entity.
 
 It is a good fit for:
 
@@ -358,9 +368,9 @@ It is **not** a good fit for:
 
 Those cases are where read models and projections come in.
 
-### Load one aggregate stream
+### Load one stream
 
-`ReadAggregateStream` returns the events for one aggregate instance ordered by `aggregate_version`:
+`ReadStream` returns the events for one stream instance ordered by `stream_version`:
 
 ```go
 tx, err := db.Begin(ctx)
@@ -369,7 +379,7 @@ if err != nil {
 }
 defer tx.Rollback(ctx) //nolint:errcheck
 
-stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
+stream, err := eventStore.ReadStream(ctx, tx, "Order", orderID, nil, nil)
 if err != nil {
 	return err
 }
@@ -385,7 +395,7 @@ The version bounds are optional and inclusive. That is useful when you want to r
 fromVersion := int64(5)
 toVersion := int64(9)
 
-stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, &fromVersion, &toVersion)
+stream, err := eventStore.ReadStream(ctx, tx, "Order", orderID, &fromVersion, &toVersion)
 ```
 
 ### Load and replay with generated helpers
@@ -416,7 +426,7 @@ func (r *OrderRepository) Load(ctx context.Context, orderID string) (*order.Orde
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	stream, err := r.eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
+	stream, err := r.eventStore.ReadStream(ctx, tx, "Order", orderID, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +499,7 @@ func (o *Order) Apply(event any) error {
 
 That keeps the boundary clean. The infrastructure layer knows how to read and decode persisted events. The domain layer only knows how to apply business facts.
 
-When business logic needs a precise, authoritative state snapshot, replaying the aggregate stream is the safe place to stand. For broad query workloads, however, rebuilding many aggregates on demand is usually the wrong tool.
+When business logic needs a precise, authoritative state snapshot, replaying the stream is the safe place to stand. For broad query workloads, however, rebuilding many aggregates on demand is usually the wrong tool.
 
 ## Projections and read models
 
@@ -506,9 +516,9 @@ In store terms, projections usually consume the global log through `ReadEvents`,
 
 ### A global projection
 
-A global projection is just a consumer that does **not** scope itself to specific aggregate types. That is useful for cross-cutting concerns such as metrics, audit summaries, or integration publishing.
+A global projection is just a consumer that does **not** scope itself to specific stream types. That is useful for cross-cutting concerns such as metrics, audit summaries, or integration publishing.
 
-Here is a simple metrics projection that counts processed events and exposes them as Prometheus metrics. It receives the whole log, does not filter on aggregate type, and ignores the SQL transaction because it writes to a metrics registry rather than a database table:
+Here is a simple metrics projection that counts processed events and exposes them as Prometheus metrics. It receives the whole log, does not filter on stream type, and ignores the SQL transaction because it writes to a metrics registry rather than a database table:
 
 ```go
 var projectedEventsTotal = promauto.NewCounterVec(
@@ -516,7 +526,7 @@ var projectedEventsTotal = promauto.NewCounterVec(
 		Name: "eventsalsa_projection_events_total",
 		Help: "Total number of events processed by projection handlers.",
 	},
-	[]string{"projection", "aggregate_type", "event_type"},
+	[]string{"projection", "stream_type", "event_type"},
 )
 
 type ProjectionMetrics struct{}
@@ -528,18 +538,18 @@ func (p *ProjectionMetrics) Name() string {
 func (p *ProjectionMetrics) Handle(_ context.Context, _ pgx.Tx, event store.PersistedEvent) error {
 	projectedEventsTotal.WithLabelValues(
 		p.Name(),
-		event.AggregateType,
+		event.StreamType,
 		event.EventType,
 	).Inc()
 	return nil
 }
 ```
 
-Because this projection does not implement `AggregateTypes()`, it is global from the runtime's point of view. This is the simplest shape for cross-cutting telemetry, audit sinks, or integration publishers that care about the whole log.
+Because this projection does not implement `StreamTypes()`, it is global from the runtime's point of view. This is the simplest shape for cross-cutting telemetry, audit sinks, or integration publishers that care about the whole log.
 
 ### A scoped projection
 
-When a projection only cares about one aggregate family, implement `consumer.ScopedConsumer` and return the aggregate types you want.
+When a projection only cares about one stream family, implement `consumer.ScopedConsumer` and return the stream types you want.
 
 For an orders list page, a read model might look like this:
 
@@ -564,7 +574,7 @@ func (p *OrderOverviewProjection) Name() string {
 	return "order_overview_v1"
 }
 
-func (p *OrderOverviewProjection) AggregateTypes() []string {
+func (p *OrderOverviewProjection) StreamTypes() []string {
 	return []string{"Order"}
 }
 
@@ -593,7 +603,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    currency = EXCLUDED.currency,
 			    version = EXCLUDED.version
 			WHERE order_overview_v1.version < EXCLUDED.version
-		`, event.AggregateID, e.CustomerID, e.Currency, event.AggregateVersion)
+		`, event.StreamID, e.CustomerID, e.Currency, event.StreamVersion)
 		return err
 
 	case orderv1.OrderLineAdded:
@@ -604,7 +614,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    version = $4
 			WHERE order_id = $1
 			  AND version < $4
-		`, event.AggregateID, int64(e.Quantity)*e.UnitPriceCents, e.Quantity, event.AggregateVersion)
+		`, event.StreamID, int64(e.Quantity)*e.UnitPriceCents, e.Quantity, event.StreamVersion)
 		return err
 
 	case orderv1.OrderConfirmed:
@@ -614,7 +624,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    version = $2
 			WHERE order_id = $1
 			  AND version < $2
-		`, event.AggregateID, event.AggregateVersion)
+		`, event.StreamID, event.StreamVersion)
 		return err
 
 	default:
@@ -623,7 +633,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 }
 ```
 
-The `version` column is what keeps this projection idempotent. If the same event is replayed or retried, the update is ignored once the row has already reached that aggregate version.
+The `version` column is what keeps this projection idempotent. If the same event is replayed or retried, the update is ignored once the row has already reached that stream version.
 
 ### Strong consistency in the repository
 
@@ -672,7 +682,7 @@ As a rule of thumb:
 :::note
 Read models maintained by projections are for query workloads.
 
-Use aggregate stream reads when you need one aggregate's exact state for business logic. Use read models when you need list screens, filters, reporting, search, or anything else that spans many aggregates.
+Use stream reads when you need one aggregate's exact state for business logic. Use read models when you need list screens, filters, reporting, search, or anything else that spans many aggregates.
 :::
 
 ## Observability
@@ -762,41 +772,44 @@ If you later move to [`eventsalsa/worker`](../worker/), the same idea still appl
 
 ## Migration generation
 
-The quickest way to create the store schema is still `migrate-gen`:
+The quickest way to create the store schema is `migrate-gen`:
 
 ```bash
 go run github.com/eventsalsa/store/cmd/migrate-gen -output migrations
 ```
 
-That command writes a PostgreSQL migration for the event log and aggregate heads table. You can also set a stable file name:
+That command writes a PostgreSQL migration creating the `events` table and the `stream_heads` table. You can also set a stable file name:
 
 ```bash
-go run github.com/eventsalsa/store/cmd/migrate-gen -output migrations -filename 001_event_store.sql
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -filename 001_event_store.sql
 ```
 
-If you want to change the generated events table name from the CLI, that flag is available too:
+If you want to customize table names from the CLI, flags are available:
 
 ```bash
-go run github.com/eventsalsa/store/cmd/migrate-gen -output migrations -events-table event_log
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -events-table events \
+  -stream-heads-table stream_heads
 ```
 
 ### Advanced migration generation
 
-The CLI covers the common path. For more control, use the `migrations` package directly:
+The CLI covers standard workflows. For programmatic generation or integration with deployment tooling, use the `migrations` package directly:
 
 ```go
 config := migrations.DefaultConfig()
 config.OutputFolder = "db/migrations"
 config.OutputFilename = "001_event_store.sql"
-config.EventsTable = "event_log"
-config.AggregateHeadsTable = "event_log_heads"
+config.EventsTable = "events"
+config.StreamHeadsTable = "stream_heads"
 
 if err := migrations.GeneratePostgres(&config); err != nil {
 	return err
 }
 ```
-
-This is the better option when you want the migration to match custom table names exactly.
 
 :::caution
 If you change the generated table names, change the store configuration too.
@@ -804,99 +817,134 @@ If you change the generated table names, change the store configuration too.
 `migrations.Config` and `postgres.StoreConfig` need to stay aligned. A migration that creates `event_log` is not useful if the running store is still configured to read and write `events`.
 :::
 
-## Best practices
+## Declarative Range Partitioning
 
-There is no single right way to structure an event-sourced application, but a few habits pay off quickly.
+`eventsalsa/store` supports declarative PostgreSQL range partitioning on the `events` table by `global_position`. This allows event stores scaling to hundreds of millions or billions of events to maintain fast B-tree index scans, optimize autovacuum, and maximize write throughput.
 
-### Keep command transactions short
+### Why partition on `global_position`?
 
-The store works inside your `*sql.Tx`, which is a strength, but it also means the command path should stay disciplined. CQRS-style command handling usually works best when the transaction is kept as small as possible:
+1. **Append-Only Monotonic Order**: All appends write sequentially into the newest active partition. Older partition indexes become read-only and stay hot in the OS page cache without ongoing index churn.
+2. **Sequential Consumer Pagination**: Consumers reading `ReadEvents(ctx, tx, fromPosition, limit)` scan contiguous ranges localized within one or two partitions at a time.
+3. **Cross-Partition Optimistic Concurrency**: In PostgreSQL, parent tables partitioned by `RANGE (global_position)` cannot enforce cross-partition unique constraints on columns that do not include the partition key (i.e. `UNIQUE (stream_type, stream_id, stream_version)` cannot span partitions). `eventsalsa/store` resolves this by using the unpartitioned `stream_heads` table to atomically reserve version ranges before writing to `events`.
 
-1. load the aggregate
-2. decide
-3. append
-4. update only the read models that truly need strong consistency
-5. commit
+### Native Range Partitioning
 
-Long-running work, remote calls, and heavy projection fan-out are better moved out of the write transaction.
+Native partitioning creates a sequence and pre-allocates a configured number of partition child tables with zero-padded boundaries.
 
-### Think about sensitive data early
-
-Event stores are designed to be append-only. That makes them useful, but it also means payload mistakes are hard to undo cleanly later.
-
-If there is any chance that a payload may carry PII, credentials, or other sensitive material, think about that before the event shape spreads through the system. See [`eventsalsa/encryption`](../encryption/) for patterns around envelope encryption, crypto-shredding, and sensitive lookups.
-
-:::caution
-Treat sensitive data in event payloads as a top-priority design concern.
-
-Once sensitive fields land in an append-only store, getting rid of them cleanly is much harder than fixing the problem up front. With event stores, this is a one-way street more often than teams expect.
-:::
-
-### Separate write and read access
-
-`eventsalsa/store` works especially well with CQRS-style separation of responsibilities. One practical setup is:
-
-- write-side roles that can append to the event store
-- read-side roles that can query only the read models
-- a clear split between event store tables and query tables
-
-Many teams keep the event store tables and read models logically separated, often with different schemas or at least different database roles. The exact layout is up to your application, but the principle is simple: the write model and the query model usually benefit from different permissions and different operational concerns.
-
-One common arrangement is to keep the store tables under something like `event_store`, the read models under something like `read_models`, and then grant:
-
-- a read/write role to the write side
-- a read-only role to query-facing code and reporting paths
-
-For teams that manage this at the migration level, the setup can look like this:
-
-```sql
-CREATE SCHEMA IF NOT EXISTS event_store;
-CREATE SCHEMA IF NOT EXISTS read_models;
-
-CREATE ROLE app_event_writer LOGIN PASSWORD 'change-me';
-CREATE ROLE app_read_model_reader LOGIN PASSWORD 'change-me';
-
-GRANT USAGE ON SCHEMA event_store TO app_event_writer;
-GRANT USAGE ON SCHEMA read_models TO app_event_writer, app_read_model_reader;
-
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA event_store TO app_event_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA read_models TO app_event_writer;
-GRANT SELECT ON ALL TABLES IN SCHEMA read_models TO app_read_model_reader;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA read_models
-	GRANT SELECT ON TABLES TO app_read_model_reader;
+```bash
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -partition-strategy native \
+  -partition-size 10000000 \
+  -initial-partitions 4
 ```
 
-The exact role model is yours to choose, but the pattern is worth keeping: the write side needs broader access than the read side, and read models are usually a good place to enforce a stricter read-only boundary.
+This generates:
+- `events_global_position_seq`
+- Parent `events` table with `PARTITION BY RANGE (global_position)`
+- Pre-created initial partitions:
+  - `events_p0000000001_p0010000000` (values from 1 to 10,000,001)
+  - `events_p0010000001_p0020000000` (values from 10,000,001 to 20,000,001)
+  - `events_p0020000001_p0030000000` (values from 20,000,001 to 30,000,001)
+  - `events_p0030000001_p0040000000` (values from 30,000,001 to 40,000,001)
+- `stream_heads` table and parent indexes (automatically applied to all child partitions).
 
-### Plan for store growth
+Programmatic configuration with `migrations.Config`:
 
-High-traffic systems can grow the event log quickly. When that starts to matter, it is worth thinking about partitioning the events table by `global_position` and managing partitions with a tool such as `pg_partman`.
+```go
+config := migrations.DefaultConfig()
+config.Partitioning.Strategy = migrations.PartitionStrategyNative
+config.Partitioning.PartitionSize = 10000000
+config.Partitioning.InitialPartitions = 4
 
-At the very least, keep an eye on store size and position growth:
-
-```sql
-SELECT
-    pg_size_pretty(pg_total_relation_size('events')) AS events_total_size,
-    MAX(global_position) AS latest_global_position
-FROM events;
+if err := migrations.GeneratePostgres(&config); err != nil {
+	return err
+}
 ```
 
-If you move toward partitioning, `pg_partman` gives you a practical way to automate range partitions on `global_position`:
+### `pg_partman` Dynamic Partitioning
+
+For automated partition creation without manual intervention, `eventsalsa/store` integrates with [`pg_partman`](https://github.com/pgpartman/pg_partman).
+
+#### Option A: Automated Maintenance with `pg_cron`
+
+```bash
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -partition-strategy partman \
+  -partman-maintenance pg_cron \
+  -partition-size 10000000 \
+  -initial-partitions 4
+```
+
+This generates the `pg_partman` schema, registers the table via `partman.create_parent(...)`, and schedules maintenance hourly with `cron.schedule(...)`:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_partman;
+CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 SELECT partman.create_parent(
-    p_parent_table := 'public.events',
-    p_control := 'global_position',
-    p_type := 'range',
-    p_interval := '1000000',
-    p_start_partition := '0'
+    p_parent_table => 'public.events',
+    p_control => 'global_position',
+    p_type => 'native',
+    p_interval => '10000000',
+    p_premake => 4
 );
+
+SELECT cron.schedule('partman-maintenance-events', '0 * * * *', $$CALL partman.run_maintenance_proc()$$);
 ```
 
-That is not part of the default migration, but it is a sensible operational step once retention, vacuum pressure, and index size begin to show up in production planning.
+#### Option B: Automated Maintenance with Background Worker (`pg_partman_bgw`)
+
+```bash
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -partition-strategy partman \
+  -partman-maintenance bgw
+```
+
+Configure `postgresql.conf` on your PostgreSQL server:
+```ini
+shared_preload_libraries = 'pg_partman_bgw'
+pg_partman_bgw.interval = 3600
+pg_partman_bgw.role = 'postgres'
+pg_partman_bgw.dbname = 'mydb'
+```
+
+#### Option C: External / Manual Maintenance
+
+```bash
+go run github.com/eventsalsa/store/cmd/migrate-gen \
+  -output migrations \
+  -partition-strategy partman \
+  -partman-maintenance none
+```
+
+Run or schedule the procedure periodically from an external job scheduler (such as a Kubernetes CronJob or systemd timer):
+
+```sql
+CALL partman.run_maintenance_proc();
+```
+
+### DBA Runbook & Operations
+
+#### Monitoring Sequence Growth
+
+When using range partitioning, monitor the global position sequence value:
+
+```sql
+SELECT last_value FROM events_global_position_seq;
+```
+
+#### Pre-Creating Partitions (Native Mode)
+
+In native mode, ensure new partitions are provisioned before `global_position` reaches the boundary of the highest existing partition:
+
+```sql
+-- Example: creating partition for 40,000,001 to 50,000,000
+CREATE TABLE IF NOT EXISTS events_p0040000001_p0050000000 PARTITION OF events
+    FOR VALUES FROM (40000001) TO (50000001);
+```
 
 ## Transactional outbox
 

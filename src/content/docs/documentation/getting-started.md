@@ -110,7 +110,7 @@ go run github.com/eventsalsa/store/cmd/migrate-gen \
   -filename 001_events.sql
 ```
 
-The generated migration creates the append-only `events` table and the `aggregate_heads` table used for efficient version checks during append. Apply that SQL with your normal migration process before moving on.
+The generated migration creates the append-only `events` table and the `stream_heads` table used for atomic version reservation during append. Apply that SQL with your normal migration process before moving on.
 
 ## Open PostgreSQL and create the store
 
@@ -233,44 +233,44 @@ func buildOrderEvents(orderID string) ([]store.Event, error) {
 
 	events := []store.Event{
 		{
-			AggregateType: "Order",
-			AggregateID:   orderID,
-			EventID:       uuid.New(),
-			EventType:     "OrderPlaced",
-			EventVersion:  1,
-			Payload:       placedPayload,
-			Metadata:      []byte(`{}`),
-			CreatedAt:     now,
+			StreamType:   "Order",
+			StreamID:     orderID,
+			EventID:      uuid.New(),
+			EventType:    "OrderPlaced",
+			EventVersion: 1,
+			Payload:      placedPayload,
+			Metadata:     []byte(`{}`),
+			CreatedAt:    now,
 		},
 		{
-			AggregateType: "Order",
-			AggregateID:   orderID,
-			EventID:       uuid.New(),
-			EventType:     "OrderLineAdded",
-			EventVersion:  1,
-			Payload:       lineOnePayload,
-			Metadata:      []byte(`{}`),
-			CreatedAt:     now.Add(10 * time.Second),
+			StreamType:   "Order",
+			StreamID:     orderID,
+			EventID:      uuid.New(),
+			EventType:    "OrderLineAdded",
+			EventVersion: 1,
+			Payload:      lineOnePayload,
+			Metadata:     []byte(`{}`),
+			CreatedAt:    now.Add(10 * time.Second),
 		},
 		{
-			AggregateType: "Order",
-			AggregateID:   orderID,
-			EventID:       uuid.New(),
-			EventType:     "OrderLineAdded",
-			EventVersion:  1,
-			Payload:       lineTwoPayload,
-			Metadata:      []byte(`{}`),
-			CreatedAt:     now.Add(20 * time.Second),
+			StreamType:   "Order",
+			StreamID:     orderID,
+			EventID:      uuid.New(),
+			EventType:    "OrderLineAdded",
+			EventVersion: 1,
+			Payload:      lineTwoPayload,
+			Metadata:     []byte(`{}`),
+			CreatedAt:    now.Add(20 * time.Second),
 		},
 		{
-			AggregateType: "Order",
-			AggregateID:   orderID,
-			EventID:       uuid.New(),
-			EventType:     "OrderConfirmed",
-			EventVersion:  1,
-			Payload:       confirmedPayload,
-			Metadata:      []byte(`{}`),
-			CreatedAt:     now.Add(30 * time.Second),
+			StreamType:   "Order",
+			StreamID:     orderID,
+			EventID:      uuid.New(),
+			EventType:    "OrderConfirmed",
+			EventVersion: 1,
+			Payload:      confirmedPayload,
+			Metadata:     []byte(`{}`),
+			CreatedAt:    now.Add(30 * time.Second),
 		},
 	}
 
@@ -282,9 +282,9 @@ Notice what is and is not stored here:
 
 - `EventType` tells consumers how to interpret the payload
 - `EventVersion` versions the payload schema
-- `AggregateType` and `AggregateID` tell the store which stream this event belongs to
+- `StreamType` and `StreamID` tell the store which stream this event belongs to
 
-The store will assign `AggregateVersion` and `GlobalPosition` when you append.
+The store will assign `StreamVersion` and `GlobalPosition` when you append.
 
 ## Append the events
 
@@ -345,7 +345,7 @@ Reading a stream is straightforward. You ask for one aggregate by type and ID:
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, nil, nil)
+	stream, err := eventStore.ReadStream(ctx, tx, "Order", orderID, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -361,7 +361,7 @@ That returns the complete ordered history for the order. You can also read only 
 fromVersion := int64(2)
 toVersion := int64(4)
 
-stream, err := eventStore.ReadAggregateStream(ctx, tx, "Order", orderID, &fromVersion, &toVersion)
+stream, err := eventStore.ReadStream(ctx, tx, "Order", orderID, &fromVersion, &toVersion)
 ```
 
 That is useful when you want to inspect a slice of history, compare changes across versions, or replay only a known window.
@@ -402,7 +402,7 @@ func LoadOrder(stream store.Stream) (*Order, error) {
 				return nil, err
 			}
 
-			order.ID = event.AggregateID
+			order.ID = event.StreamID
 			order.CustomerID = data.CustomerID
 			order.Currency = data.Currency
 			order.Status = "pending"
@@ -420,7 +420,7 @@ func LoadOrder(stream store.Stream) (*Order, error) {
 			order.Status = "confirmed"
 		}
 
-		order.Version = event.AggregateVersion
+		order.Version = event.StreamVersion
 	}
 
 	return order, nil
@@ -474,7 +474,7 @@ func (p *OrderOverviewProjection) Name() string {
 	return "order_overview_v1"
 }
 
-func (p *OrderOverviewProjection) AggregateTypes() []string {
+func (p *OrderOverviewProjection) StreamTypes() []string {
 	return []string{"Order"}
 }
 
@@ -503,7 +503,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    currency = EXCLUDED.currency,
 			    version = EXCLUDED.version
 			WHERE order_overview_v1.version < EXCLUDED.version
-		`, event.AggregateID, data.CustomerID, data.Currency, event.AggregateVersion)
+		`, event.StreamID, data.CustomerID, data.Currency, event.StreamVersion)
 		return err
 
 	case "OrderLineAdded":
@@ -519,7 +519,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    version = $4
 			WHERE order_id = $1
 			  AND version < $4
-		`, event.AggregateID, int64(data.Quantity)*data.UnitPriceCents, data.Quantity, event.AggregateVersion)
+		`, event.StreamID, int64(data.Quantity)*data.UnitPriceCents, data.Quantity, event.StreamVersion)
 		return err
 
 	case "OrderConfirmed":
@@ -529,7 +529,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			    version = $2
 			WHERE order_id = $1
 			  AND version < $2
-		`, event.AggregateID, event.AggregateVersion)
+		`, event.StreamID, event.StreamVersion)
 		return err
 	}
 
@@ -539,7 +539,7 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 var _ consumer.ScopedConsumer = (*OrderOverviewProjection)(nil)
 ```
 
-The `version` column is what makes this projection idempotent. If the same event is applied twice, the second run does not advance the row because the stored version is already equal to or higher than the incoming `AggregateVersion`.
+The `version` column is what makes this projection idempotent. If the same event is applied twice, the second run does not advance the row because the stored version is already equal to or higher than the incoming `StreamVersion`.
 
 ### Run it inline with the append
 

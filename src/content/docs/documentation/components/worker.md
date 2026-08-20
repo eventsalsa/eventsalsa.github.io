@@ -102,7 +102,7 @@ func (p *OrderOverviewProjection) Name() string {
 	return "order_overview_v1"
 }
 
-func (p *OrderOverviewProjection) AggregateTypes() []string {
+func (p *OrderOverviewProjection) StreamTypes() []string {
 	return []string{"Order"}
 }
 

@@ -85,8 +85,8 @@ const storeCodeLines = [
 	`s := postgres.<span class="token-function">NewStore</span>(postgres.<span class="token-function">DefaultStoreConfig</span>())`,
 	``,
 	`event := store.Event{`,
-	`  AggregateType: <span class="token-string">"User"</span>,`,
-	`  AggregateID: userID,`,
+	`  StreamType: <span class="token-string">"User"</span>,`,
+	`  StreamID: userID,`,
 	`  EventID: uuid.<span class="token-function">New</span>(),`,
 	`  EventType: <span class="token-string">"UserRegistered"</span>,`,
 	`  EventVersion: <span class="token-number">1</span>,`,
@@ -107,7 +107,7 @@ const workerCodeLines = [
 	`  <span class="token-keyword">return</span> <span class="token-string">"account_projection"</span>`,
 	`}`,
 	``,
-	`func (p *AccountProjection) <span class="token-function">AggregateTypes</span>() []string {`,
+	`func (p *AccountProjection) <span class="token-function">StreamTypes</span>() []string {`,
 	`  <span class="token-keyword">return</span> []string{<span class="token-string">"Account"</span>}`,
 	`}`,
 	``,
@@ -236,7 +236,7 @@ const workerCodeLines = [
 					<ul class="proof-points">
 						<li>
 							<span class="material-symbols-outlined">check</span>
-							<span>Append and read aggregate streams in a PostgreSQL-backed event store.</span>
+							<span>Append and read event streams in a PostgreSQL-backed event store.</span>
 						</li>
 						<li>
 							<span class="material-symbols-outlined">check</span>
@@ -244,7 +244,7 @@ const workerCodeLines = [
 						</li>
 						<li>
 							<span class="material-symbols-outlined">check</span>
-							<span>Control transaction boundaries yourself with the <code>*sql.Tx</code> you already have.</span>
+							<span>Control transaction boundaries yourself with the <code>pgx.Tx</code> you already have.</span>
 						</li>
 					</ul>
 				</div>
