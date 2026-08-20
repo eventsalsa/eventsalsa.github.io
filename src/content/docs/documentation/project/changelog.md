@@ -29,6 +29,15 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/worker
 
+### v0.1.0
+
+- **Breaking Changes**:
+  - Replaced `Aggregate` terminology with `Stream` across all consumer contracts (`consumer.ScopedConsumer.StreamTypes()`), event filtering, and persisted event structures.
+  - Upgraded core dependency to `github.com/eventsalsa/store` v0.1.0.
+- **Improvements**:
+  - Migrated integration test suites to `testcontainers-go` for automated ephemeral PostgreSQL container provisioning.
+  - Configured automated release management and versioning with Release Please.
+
 ### v0.0.3
 
 - Migrated PostgreSQL worker database operations to native `pgx/v5`, removing the `database/sql` coupling.
@@ -47,6 +56,23 @@ This page summarizes released versions of the current `eventsalsa` components. I
 - Initial release.
 
 ## eventsalsa/store
+
+### v0.1.0
+
+- **Breaking Changes**:
+  - Replaced `Aggregate` terminology with `Stream` across all core types (`Event.StreamType`, `Event.StreamID`, `PersistedEvent.StreamVersion`, `Stream`), stream reader interfaces (`StreamReader.ReadStream`), consumer filters (`ScopedConsumer.StreamTypes()`), configuration (`postgres.WithStreamHeadsTable`), migration tables (`stream_heads`), and CLI tools (`eventmap-gen`, `migrate-gen`).
+- **Features**:
+  - Added declarative PostgreSQL range partitioning on `global_position` for massive event logs, supporting native pre-allocated partitions and dynamic management with `pg_partman` (via `pg_cron`, background worker `bgw`, or external scheduler).
+- **Improvements**:
+  - Introduced authoritative `stream_heads` atomic optimistic concurrency control engine with transaction row-level locking.
+  - Migrated integration test suite to `testcontainers-go`.
+  - Upgraded to `github.com/jackc/pgx/v5` v5.10.0.
+
+### v0.0.4
+
+- **Bug Fixes**:
+  - Fixed non-deterministic switch-case generation in `eventmap-gen` and formatted generated code with standard `go/format`.
+  - Configured automated releases with Release Please.
 
 ### v0.0.3
 
