@@ -35,7 +35,7 @@ export default defineConfig({
 					label: 'Components',
 					items: [
 						{ label: 'Store', slug: 'documentation/components/store' },
-						{ label: 'Worker', slug: 'documentation/components/worker' },
+						{ label: 'Projector', slug: 'documentation/components/projector' },
 						{ label: 'Encryption', slug: 'documentation/components/encryption' },
 					],
 				},

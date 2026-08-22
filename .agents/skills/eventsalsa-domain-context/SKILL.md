@@ -8,7 +8,7 @@ Use this repository context when a task involves product framing, documentation,
 - `eventsalsa` is an event sourcing bundle for Go.
 - Current components:
   - `eventsalsa/store`: append-only event store
-  - `eventsalsa/worker`: async consumers and projections
+  - `eventsalsa/projector`: async projections and distributed daemon
   - `eventsalsa/encryption`: envelope encryption for PII and secrets, crypto-shredding for GDPR compliance, and HMAC hashing for sensitive lookups
 
 Important constraints:

@@ -3,7 +3,7 @@ title: Store
 description: Append, read, and project events with eventsalsa/store.
 ---
 
-`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, stream reads, global log reads, consumer contracts for projections, and a PostgreSQL implementation that works inside your own transaction (`pgx.Tx`).
+`eventsalsa/store` is the append-only event store in the eventsalsa bundle. It is intentionally small: it gives you immutable event persistence, optimistic concurrency, stream reads, global log reads, and a PostgreSQL implementation that works inside your own transaction (`pgx.Tx`).
 
 That shape matters. The store does not try to own your domain model, your application services, or your transaction boundaries. It gives you a reliable event log and the primitives around it, then gets out of the way.
 
@@ -12,8 +12,7 @@ At a practical level, the component covers:
 - appending one or more events for a single stream instance
 - optimistic concurrency through expected versions and stream heads
 - reading a stream back in version order
-- reading the global log for consumers and projections
-- projection contracts through the `consumer` package
+- reading the global log for projections and subscribers
 - migration generation for standard and partitioned PostgreSQL schemas
 - event mapping code generation through `eventmap-gen`
 
@@ -34,7 +33,7 @@ Before persistence, you work with `store.Event`. After persistence, the store re
 | `StreamType` | The logical type of the stream, for example `Order`. Keep it stable. |
 | `StreamID` | The identifier of one stream instance, for example an order ID. |
 | `StreamVersion` | The event's position inside that stream. The store assigns it during append. |
-| `GlobalPosition` | The event's position in the global log. The store assigns it during append. Useful for consumers and projections. |
+| `GlobalPosition` | The event's position in the global log. The store assigns it during append. Useful for projections and global log readers. |
 | `EventType` | The logical event name, for example `OrderPlaced`. |
 | `EventVersion` | The schema version of the payload for that event type. |
 | `Payload` | The serialized event body. In the examples below it is JSON, but the field itself is just `[]byte`. |
@@ -53,7 +52,7 @@ Two values deserve special attention because they are easy to conflate:
 If an order stream is currently at stream version `7` and a command appends two new events, those events will be stored at stream versions `8` and `9`. At the same time, they also get global positions in the shared event log.
 
 :::caution
-`global_position` is useful for consumers, but it is **not** a safe naive checkpoint frontier under concurrent writers. PostgreSQL sequences guarantee uniqueness, not commit order. A lower position can become visible after a higher one has already been returned.
+`global_position` is useful for projections and event readers, but it is **not** a safe naive checkpoint frontier under concurrent writers. PostgreSQL sequences guarantee uniqueness, not commit order. A lower position can become visible after a higher one has already been returned.
 :::
 
 ### Optimistic concurrency
@@ -310,7 +309,7 @@ Here is what each option controls:
 | --- | --- | --- |
 | `WithEventsTable(...)` | Sets the event log table name. | Rename when your schema conventions require a different table name. |
 | `WithStreamHeadsTable(...)` | Sets the stream heads table name used for O(1) version lookups and atomic optimistic concurrency control. | Rename when your schema conventions require it. |
-| `WithNotifyChannel(...)` | Sends a PostgreSQL `NOTIFY` on successful append. | Useful when consumers wake up through `LISTEN/NOTIFY` instead of polling. |
+| `WithNotifyChannel(...)` | Sends a PostgreSQL `NOTIFY` on successful append. | Useful when projections or background dispatchers wake up through `LISTEN/NOTIFY` instead of polling. |
 | `WithLogger(...)` | Plugs in store-level logging. | Useful for operational visibility in production and troubleshooting. |
 
 `WithNotifyChannel(...)` is worth calling out. The notification is emitted inside the append transaction, which means listeners only wake up after the transaction commits. That avoids phantom work on rolled-back writes.
@@ -318,7 +317,7 @@ Here is what each option controls:
 :::caution
 `WithNotifyChannel(...)` is a good fit when listeners hold real PostgreSQL connections and can safely `LISTEN` on the same database.
 
-If your consumers or workers connect through PgBouncer in transaction-pooling mode, they should rely on the worker's polling strategy instead of the notify-based wakeup, or connect the listener connection to a session-pooled port or directly to the database.
+If your projector instances connect through PgBouncer in transaction-pooling mode, they should rely on the projector's polling strategy instead of the notify-based wakeup, or connect the listener connection to a session-pooled port or directly to the database.
 :::
 
 ## PgBouncer and Transaction Pooling
@@ -346,7 +345,7 @@ To support transaction pooling, you must configure `pgx` to use a query executio
 
 If you enable transaction-level notifications using `WithNotifyChannel(...)`, the `NOTIFY` is emitted using `pg_notify(...)` within the transaction. This is transaction-safe and works under PgBouncer transaction pooling.
 
-However, receiving notifications (`LISTEN`) is a session-level operation. Any process listening for wakeups (such as the notify-based worker dispatcher) must bypass transaction pooling, either by using PgBouncer in session pooling mode or by connecting directly to the database.
+However, receiving notifications (`LISTEN`) is a session-level operation. Any process listening for wakeups (such as the notify-based projector dispatcher) must bypass transaction pooling, either by using PgBouncer in session pooling mode or by connecting directly to the database.
 
 ## Reading streams
 
@@ -512,44 +511,9 @@ That distinction matters because event streams and read models solve different p
 
 If someone asks for "all confirmed orders from last week", you probably do not want to rebuild every order stream at request time. You want a read model that already has the relevant fields arranged for that query.
 
-In store terms, projections usually consume the global log through `ReadEvents`, either directly in your own runtime or through [`eventsalsa/worker`](../worker/).
+In store terms, projections usually consume the global log through `ReadEvents`, either synchronously in the command transaction or asynchronously through [`eventsalsa/projector`](../projector/).
 
-### A global projection
-
-A global projection is just a consumer that does **not** scope itself to specific stream types. That is useful for cross-cutting concerns such as metrics, audit summaries, or integration publishing.
-
-Here is a simple metrics projection that counts processed events and exposes them as Prometheus metrics. It receives the whole log, does not filter on stream type, and ignores the SQL transaction because it writes to a metrics registry rather than a database table:
-
-```go
-var projectedEventsTotal = promauto.NewCounterVec(
-	prometheus.CounterOpts{
-		Name: "eventsalsa_projection_events_total",
-		Help: "Total number of events processed by projection handlers.",
-	},
-	[]string{"projection", "stream_type", "event_type"},
-)
-
-type ProjectionMetrics struct{}
-
-func (p *ProjectionMetrics) Name() string {
-	return "projection_metrics"
-}
-
-func (p *ProjectionMetrics) Handle(_ context.Context, _ pgx.Tx, event store.PersistedEvent) error {
-	projectedEventsTotal.WithLabelValues(
-		p.Name(),
-		event.StreamType,
-		event.EventType,
-	).Inc()
-	return nil
-}
-```
-
-Because this projection does not implement `StreamTypes()`, it is global from the runtime's point of view. This is the simplest shape for cross-cutting telemetry, audit sinks, or integration publishers that care about the whole log.
-
-### A scoped projection
-
-When a projection only cares about one stream family, implement `consumer.ScopedConsumer` and return the stream types you want.
+### An inline projection
 
 For an orders list page, a read model might look like this:
 
@@ -565,17 +529,13 @@ CREATE TABLE order_overview_v1 (
 );
 ```
 
-The projection that keeps it current can stay focused on `Order` events:
+An inline projection handler can define a `Name()` to identify the read model and a `Handle(...)` method that receives persisted events and updates the table:
 
 ```go
 type OrderOverviewProjection struct{}
 
 func (p *OrderOverviewProjection) Name() string {
 	return "order_overview_v1"
-}
-
-func (p *OrderOverviewProjection) StreamTypes() []string {
-	return []string{"Order"}
 }
 
 func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
@@ -635,6 +595,10 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 
 The `version` column is what keeps this projection idempotent. If the same event is replayed or retried, the update is ignored once the row has already reached that stream version.
 
+:::tip
+By implementing both `Name() string` and `Handle(ctx, tx, event) error`, this projection handler is already structured to fit directly into [`eventsalsa/projector`](../projector/) if you later choose to run it asynchronously.
+:::
+
 ### Strong consistency in the repository
 
 If the read model is cheap to update and you need it to be fresh immediately after the command commits, run the projection inside the same transaction as the append.
@@ -666,13 +630,13 @@ That is a good fit for read models that are:
 - local to the same database transaction
 - needed immediately by the next request or redirect
 
-### Eventual consistency and `eventsalsa/worker`
+### Eventual consistency and `eventsalsa/projector`
 
 Not every projection belongs in the write transaction.
 
 When the projection is expensive, touches outside systems, fans out to many destinations, or simply needs to scale separately from the command path, eventual consistency is usually the better choice. In that model, the append commits first and the projection catches up afterward.
 
-That is where [`eventsalsa/worker`](../worker/) comes in. The projection logic can stay largely the same, but the runtime moves out of the request path and processes the global log asynchronously.
+That is where [`eventsalsa/projector`](../projector/) comes in. The projection handler logic stays the same, but execution moves out of the request path into an asynchronous background daemon with distributed checkpointing and rebalancing.
 
 As a rule of thumb:
 
@@ -687,7 +651,7 @@ Use stream reads when you need one aggregate's exact state for business logic. U
 
 ## Observability
 
-The store keeps observability deliberately simple. It exposes a small logger interface, and it gives you enough primitives to measure projection freshness from the outside.
+The store keeps observability deliberately simple. It exposes a small logger interface for logging store operations.
 
 ### Logging store operations
 
@@ -723,52 +687,7 @@ func zapFields(keyvals []interface{}) []zap.Field {
 }
 ```
 
-That is enough for append, read, and concurrency-conflict logs to show up in the same logging pipeline as the rest of the application.
-
-### Tracking projection lag
-
-If you run projections inline, lag is effectively zero because the projection is updated before the transaction commits.
-
-If you run projections asynchronously, lag is one of the first things worth measuring. It tells you how far behind the read side is from the current event log. If lag keeps growing, your read models are getting staler and a consumer may be overloaded or stuck.
-
-One practical way to measure it is:
-
-1. read the latest visible global position from the store
-2. compare it with the projection's last processed position from your checkpoint storage
-
-For example:
-
-```go
-func ProjectionLag(ctx context.Context, tx pgx.Tx, eventStore store.GlobalPositionReader, projectionName string) (int64, error) {
-	latest, err := eventStore.GetLatestGlobalPosition(ctx, tx)
-	if err != nil {
-		return 0, err
-	}
-
-	var checkpoint *int64
-	err = tx.QueryRow(ctx, `
-		SELECT last_processed_position
-		FROM projection_checkpoint
-		WHERE projection_name = $1
-	`, projectionName).Scan(&checkpoint)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return 0, err
-	}
-
-	if checkpoint == nil {
-		return latest, nil
-	}
-
-	lag := latest - *checkpoint
-	if lag < 0 {
-		return 0, nil
-	}
-
-	return lag, nil
-}
-```
-
-If you later move to [`eventsalsa/worker`](../worker/), the same idea still applies: compare the latest available position with the runtime's persisted checkpoint and alert when the distance grows beyond what your system considers healthy.
+That is enough for append, read, and concurrency-conflict logs to show up in the same logging pipeline as the rest of the application. For real-time telemetry, lag tracking, and Prometheus metrics on asynchronous projection pipelines, see the [Observability and telemetry](../projector/#observability-and-telemetry) section in the Projector documentation.
 
 ## Migration generation
 
@@ -824,7 +743,7 @@ If you change the generated table names, change the store configuration too.
 ### Why partition on `global_position`?
 
 1. **Append-Only Monotonic Order**: All appends write sequentially into the newest active partition. Older partition indexes become read-only and stay hot in the OS page cache without ongoing index churn.
-2. **Sequential Consumer Pagination**: Consumers reading `ReadEvents(ctx, tx, fromPosition, limit)` scan contiguous ranges localized within one or two partitions at a time.
+2. **Sequential Log and Projection Pagination**: Readers scanning `ReadEvents(ctx, tx, fromPosition, limit)` process contiguous ranges localized within one or two partitions at a time.
 3. **Cross-Partition Optimistic Concurrency**: In PostgreSQL, parent tables partitioned by `RANGE (global_position)` cannot enforce cross-partition unique constraints on columns that do not include the partition key (i.e. `UNIQUE (stream_type, stream_id, stream_version)` cannot span partitions). `eventsalsa/store` resolves this by using the unpartitioned `stream_heads` table to atomically reserve version ranges before writing to `events`.
 
 ### Native Range Partitioning
