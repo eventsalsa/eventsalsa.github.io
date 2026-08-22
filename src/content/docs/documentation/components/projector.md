@@ -178,6 +178,7 @@ daemon := projector.New(
 	projector.WithBatchSize(200),
 	projector.WithBatchPause(100*time.Millisecond),
 	projector.WithBatchTimeout(20*time.Second),
+	projector.WithShutdownTimeout(5*time.Second),
 	projector.WithMaxConsecutiveFailures(5),
 	projector.WithPollInterval(500*time.Millisecond),
 	projector.WithMaxPollInterval(10*time.Second),
@@ -200,6 +201,7 @@ daemon := projector.New(
 | `WithBatchSize(n)` | `100` | Maximum number of events fetched and processed per batch window. |
 | `WithBatchPause(d)` | `200ms` | Pause between consecutive catch-up batches when a full window was read. |
 | `WithBatchTimeout(d)` | `30s` | Maximum duration for a single batch processing transaction. |
+| `WithShutdownTimeout(d)` | `5s` | Maximum duration to wait for graceful daemon shutdown and batch draining. |
 | `WithMaxConsecutiveFailures(n)` | `5` | Fatal threshold for consecutive batch errors before triggering shutdown. |
 | `WithPollInterval(d)` | `1s` | Base interval for projection polling loops. |
 | `WithMaxPollInterval(d)` | `30s` | Maximum interval used during adaptive exponential backoff. |
@@ -438,6 +440,80 @@ When an instance joins or leaves:
 3. Updated assignments are written to `projection_assignments`.
 4. Instances stop projection loops they no longer own and start newly assigned ones.
 5. If the leader fails or stops heartbeating, another instance assumes leadership and resumes coordination.
+
+## Running multiple domain daemons (`errgroup`)
+
+When building modular monoliths or multi-context services, applications often run multiple independent `Daemon` instances within a single OS process (for example, separate domain stores like `ledger.events` and `billing.events`, each with dedicated projections, checkpoints, and leases).
+
+The `*projector.Daemon` is designed to be a first-class citizen in [`golang.org/x/sync/errgroup`](https://pkg.go.dev/golang.org/x/sync/errgroup) workflows:
+
+- **Clean shutdown**: `daemon.Start(ctx)` returns `nil` when `ctx` is canceled (both during steady-state projection loops and during startup registration), preventing intentional cancellations from polluting `errgroup.Wait()`.
+- **Fatal failure propagation**: Unrecoverable faults (such as exceeding `WithMaxConsecutiveFailures`) return non-nil errors, immediately triggering `errgroup` context cancellation across sibling daemons.
+- **Graceful batch draining**: When `ctx` is canceled, in-flight batches are granted up to `WithShutdownTimeout(d)` (default `5s`) to finish processing and commit before forced cancellation.
+- **State and health inspection**: `daemon.IsRunning()` and `daemon.IsLeader()` allow HTTP readiness, liveness, and status probes (`/healthz`, `/readyz`) to query daemon health directly without executing out-of-band database queries.
+
+### Example: Multi-Daemon worker process
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/eventsalsa/projector"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 1. Initialize domain daemons with lease-based leader election
+	ledgerDaemon := projector.New(db, ledgerStore, ledgerProjections,
+		projector.WithLeaderStrategy(projector.LeaderStrategyLease),
+		projector.WithProjectorLeaderLeasesTable("ledger.projector_leader_leases"),
+		projector.WithProjectorInstancesTable("ledger.projector_instances"),
+		projector.WithProjectionAssignmentsTable("ledger.projection_assignments"),
+		projector.WithProjectionCheckpointsTable("ledger.projection_checkpoints"),
+		projector.WithShutdownTimeout(15*time.Second),
+	)
+
+	billingDaemon := projector.New(db, billingStore, billingProjections,
+		projector.WithLeaderStrategy(projector.LeaderStrategyLease),
+		projector.WithProjectorLeaderLeasesTable("billing.projector_leader_leases"),
+		projector.WithProjectorInstancesTable("billing.projector_instances"),
+		projector.WithProjectionAssignmentsTable("billing.projection_assignments"),
+		projector.WithProjectionCheckpointsTable("billing.projection_checkpoints"),
+		projector.WithShutdownTimeout(15*time.Second),
+	)
+
+	daemons := []*projector.Daemon{ledgerDaemon, billingDaemon}
+
+	// 2. Coordinate concurrent execution via errgroup
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, d := range daemons {
+		g.Go(func() error {
+			return d.Start(gCtx)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		log.Fatalf("projector worker exited with fatal error: %v", err)
+	}
+}
+```
+
+### Operational considerations for multi-daemon processes
+
+1. **Connection Pool Sizing**: Ensure your shared `*pgxpool.Pool` has sufficient connections for all concurrent daemons:
+   `PoolSize_min >= NumDaemons * (1 + MaxConcurrentProjections) + Headroom`
+2. **Lease Tables vs Advisory Locks**: Multi-daemon deployments sharing a PostgreSQL database must use `projector.LeaderStrategyLease` with domain-specific lease tables (e.g. `schema.projector_leader_leases`). `projector.LeaderStrategyAdvisory` uses a single well-known lock key across the database, which would cause unrelated domain daemons to contend for leadership.
+3. **Distinct NOTIFY Channels**: When using `projector.DispatcherStrategyNotify`, assign each domain daemon a unique channel via `projector.WithNotifyChannel("domain_events")` to prevent wakeup crosstalk between different domain event streams.
 
 ## Gaps, frontiers, and safe progress
 

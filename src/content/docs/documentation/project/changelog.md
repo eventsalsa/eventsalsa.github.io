@@ -43,6 +43,13 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/projector
 
+### v0.4.0
+
+- **Features**:
+  - Refined lifecycle coordination for seamless `golang.org/x/sync/errgroup` integration: `(*Daemon).Start(ctx)` returns `nil` on graceful context cancellation and non-nil on fatal faults.
+  - Added configurable `WithShutdownTimeout(d)` for in-flight batch draining during graceful daemon shutdown before forced cancellation.
+  - Introduced `(*Daemon).IsRunning()` and `(*Daemon).IsLeader()` state inspection methods for liveness, readiness, and monitoring probes.
+
 ### v0.3.0
 
 - **Features**:
