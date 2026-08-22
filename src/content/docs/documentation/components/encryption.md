@@ -7,7 +7,7 @@ description: Secure event payloads with envelope encryption, crypto-shredding, k
 
 Treat encryption as an early design concern. Event stores are append-only by design. Once sensitive fields land in payloads in the wrong form, fixing that later is expensive and often incomplete.
 
-`eventsalsa/encryption` does **not** depend on `eventsalsa/store` or `eventsalsa/worker`. It fits naturally with both, but you can also use it in a different persistence model if that suits your system better.
+`eventsalsa/encryption` does **not** depend on `eventsalsa/store` or `eventsalsa/projector`. It fits naturally with both, but you can also use it in a different persistence model if that suits your system better.
 
 :::caution
 If there is any realistic chance that a field contains PII, credentials, tokens, or other regulated data, decide how it will be protected before the event schema becomes part of your system. With immutable events, this is a one-way door.
@@ -411,7 +411,7 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 }
 ```
 
-That same projection can run inline for strong consistency or through `eventsalsa/worker` when eventual consistency is the better trade-off.
+That same projection can run inline for strong consistency or through `eventsalsa/projector` when eventual consistency is the better trade-off.
 
 ## Delete personal data without rewriting history
 

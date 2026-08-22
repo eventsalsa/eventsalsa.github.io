@@ -7,10 +7,15 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/store
 
+### v0.2.0
+
+- **Breaking Changes**:
+  - Removed `Consumer` and `ScopedConsumer` interfaces from the store package (`github.com/eventsalsa/store/consumer`).
+
 ### v0.1.0
 
 - **Breaking Changes**:
-  - Replaced `Aggregate` terminology with `Stream` across all core types (`Event.StreamType`, `Event.StreamID`, `PersistedEvent.StreamVersion`, `Stream`), stream reader interfaces (`StreamReader.ReadStream`), consumer filters (`ScopedConsumer.StreamTypes()`), configuration (`postgres.WithStreamHeadsTable`), migration tables (`stream_heads`), and CLI tools (`eventmap-gen`, `migrate-gen`).
+  - Replaced `Aggregate` terminology with `Stream` across all core types (`Event.StreamType`, `Event.StreamID`, `PersistedEvent.StreamVersion`, `Stream`), stream reader interfaces (`StreamReader.ReadStream`), configuration (`postgres.WithStreamHeadsTable`), migration tables (`stream_heads`), and CLI tools (`eventmap-gen`, `migrate-gen`).
 - **Features**:
   - Added declarative PostgreSQL range partitioning on `global_position` for massive event logs, supporting native pre-allocated partitions and dynamic management with `pg_partman` (via `pg_cron`, background worker `bgw`, or external scheduler).
 - **Improvements**:
@@ -36,12 +41,25 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 - Initial release.
 
-## eventsalsa/worker
+## eventsalsa/projector
+
+### v0.3.0
+
+- **Features**:
+  - Introduced pluggable runtime `Observer` interface (`OnBatchProcessed`, `OnHeartbeat`, `OnGapDetected`, `OnGapSkipped`, `OnRebalance`) for real-time telemetry, gap tracking, and Prometheus metrics emission without out-of-band database polling.
+  - Added telemetry data structures (`BatchStats`, `DaemonStats`, `GapStats`) and utility wrappers (`NoopObserver`, `MultiObserver`).
+
+### v0.2.0
+
+- **Features**:
+  - Introduced canonical `Projection` interface (`Name() string`, `Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error`).
+  - Added dynamic projection stream and event filtering decorators (`FilterStreamTypes`, `FilterEventTypes`).
+  - Upgraded core dependency to `github.com/eventsalsa/store` v0.2.0.
 
 ### v0.1.0
 
 - **Breaking Changes**:
-  - Replaced `Aggregate` terminology with `Stream` across all consumer contracts (`consumer.ScopedConsumer.StreamTypes()`), event filtering, and persisted event structures.
+  - Replaced `Aggregate` terminology with `Stream` across all projection contracts, event filtering, and persisted event structures.
   - Upgraded core dependency to `github.com/eventsalsa/store` v0.1.0.
 - **Improvements**:
   - Migrated integration test suites to `testcontainers-go` for automated ephemeral PostgreSQL container provisioning.
@@ -49,15 +67,15 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ### v0.0.3
 
-- Migrated PostgreSQL worker database operations to native `pgx/v5`, removing the `database/sql` coupling.
-- Introduced table-based lease leader election (`worker.LeaderStrategyLease`) to support deployments running behind PgBouncer in transaction pooling mode.
+- Migrated PostgreSQL projector database operations to native `pgx/v5`, removing the `database/sql` coupling.
+- Introduced table-based lease leader election (`projector.LeaderStrategyLease`) to support deployments running behind PgBouncer in transaction pooling mode.
 - Added a cascading delete constraint to the leader election table.
 - Added driver-agnostic database serialization failure detection.
 - Expanded integration test suite to cover partitioning, reconnection, and leader demotion scenarios.
 
 ### v0.0.2
 
-- Added `cmd/migrate-gen`, a stable CLI entrypoint for generating worker infrastructure migrations.
+- Added `cmd/migrate-gen`, a stable CLI entrypoint for generating projector infrastructure migrations.
 - Documented both the quick CLI flow and the package-level migration API.
 
 ### v0.0.1

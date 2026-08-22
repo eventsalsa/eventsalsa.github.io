@@ -280,7 +280,7 @@ func buildOrderEvents(orderID string) ([]store.Event, error) {
 
 Notice what is and is not stored here:
 
-- `EventType` tells consumers how to interpret the payload
+- `EventType` tells projections and readers how to interpret the payload
 - `EventVersion` versions the payload schema
 - `StreamType` and `StreamID` tell the store which stream this event belongs to
 
@@ -453,7 +453,7 @@ This table is not the source of truth. It is a projection of the event stream, o
 
 ### Define the projection
 
-`eventsalsa/store` exposes consumer contracts through `github.com/eventsalsa/store/consumer`. A projection is simply a consumer that writes to a read model.
+A projection reads persisted events and maintains a read model table.
 
 ```go
 package main
@@ -465,17 +465,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/eventsalsa/store"
-	"github.com/eventsalsa/store/consumer"
 )
 
 type OrderOverviewProjection struct{}
 
 func (p *OrderOverviewProjection) Name() string {
 	return "order_overview_v1"
-}
-
-func (p *OrderOverviewProjection) StreamTypes() []string {
-	return []string{"Order"}
 }
 
 func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {
@@ -535,8 +530,6 @@ func (p *OrderOverviewProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 
 	return nil
 }
-
-var _ consumer.ScopedConsumer = (*OrderOverviewProjection)(nil)
 ```
 
 The `version` column is what makes this projection idempotent. If the same event is applied twice, the second run does not advance the row because the stored version is already equal to or higher than the incoming `StreamVersion`.
@@ -574,12 +567,16 @@ That pattern gives you strong consistency: once the transaction commits, both th
 
 For a first system, that is often the simplest way to introduce projections. You keep the write model explicit, you get a query-friendly table, and you do not need extra infrastructure to understand the pattern.
 
+:::tip
+Designing your handlers with `Name() string` and `Handle(ctx, tx, event) error` ensures they can be dropped directly into [`eventsalsa/projector`](../components/projector/) if you later decide to run them asynchronously.
+:::
+
 ## Where to go next
 
 Once the first flow makes sense, the next useful chapters are:
 
 - [Store](../components/store/) for append semantics, event mapping generation, stream reads, projections, configuration, and operational guidance
-- [Worker](../components/worker/) when you want to move projections into an eventually consistent async runtime
+- [Projector](../components/projector/) when you want to move projections into an eventually consistent async runtime
 - [Encryption](../components/encryption/) before sensitive payload data starts becoming a liability
 
 That sequence tends to match how real systems grow: first get the write model right, then scale the read side, then harden the event payload story before it becomes painful to change.

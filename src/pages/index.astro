@@ -18,12 +18,13 @@ const featureCards = [
 		tags: ['PostgreSQL-backed', 'Append-only', 'Optimistic concurrency'],
 	},
 	{
-		name: 'eventsalsa/worker',
+		name: 'eventsalsa/projector',
 		icon: 'hub',
 		tone: 'tertiary',
-		href: `${baseUrl}documentation/components/worker/`,
+		href: `${baseUrl}documentation/components/projector/`,
 		description:
-			'Run async consumers and projections across one or more worker processes, with PostgreSQL-backed rebalancing.',
+			'Run async projections across one or more daemon instances, with PostgreSQL-backed rebalancing.',
+		tags: ['PostgreSQL-native', 'Distributed daemon', 'Dynamic filtering'],
 	},
 	{
 		name: 'eventsalsa/encryption',
@@ -40,7 +41,7 @@ const benefits = [
 		icon: 'extension',
 		title: 'Component-based',
 		description:
-			'Use only the modules you need. The store, worker, and encryption packages can be adopted independently.',
+			'Use only the modules you need. The store, projector, and encryption packages can be adopted independently.',
 	},
 	{
 		icon: 'account_tree',
@@ -58,7 +59,7 @@ const benefits = [
 		icon: 'database',
 		title: 'PostgreSQL-driven',
 		description:
-			'The store and worker are built on PostgreSQL - no need for a 3rd party message broker.',
+			'The store and projector are built on PostgreSQL - no need for a 3rd party message broker.',
 	},
 	{
 		icon: 'schema',
@@ -100,26 +101,28 @@ const storeCodeLines = [
 	`}`,
 ];
 
-const workerCodeLines = [
+const projectorCodeLines = [
 	`type AccountProjection struct{}`,
 	``,
 	`func (p *AccountProjection) <span class="token-function">Name</span>() string {`,
 	`  <span class="token-keyword">return</span> <span class="token-string">"account_projection"</span>`,
 	`}`,
 	``,
-	`func (p *AccountProjection) <span class="token-function">StreamTypes</span>() []string {`,
-	`  <span class="token-keyword">return</span> []string{<span class="token-string">"Account"</span>}`,
+	`func (p *AccountProjection) <span class="token-function">Handle</span>(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error {`,
+	`  <span class="token-keyword">return</span> <span class="token-keyword">nil</span>`,
 	`}`,
 	``,
-	`w := worker.<span class="token-function">New</span>(`,
+	`daemon := projector.<span class="token-function">New</span>(`,
 	`  db,`,
 	`  eventStore,`,
-	`  []consumer.Consumer{&AccountProjection{}},`,
-	`  worker.<span class="token-function">WithBatchSize</span>(<span class="token-number">100</span>),`,
-	`  worker.<span class="token-function">WithPollInterval</span>(<span class="token-number">500</span> * time.Millisecond),`,
+	`  []projector.Projection{`,
+	`    projector.<span class="token-function">FilterStreamTypes</span>(&AccountProjection{}, <span class="token-string">"Account"</span>),`,
+	`  },`,
+	`  projector.<span class="token-function">WithBatchSize</span>(<span class="token-number">100</span>),`,
+	`  projector.<span class="token-function">WithPollInterval</span>(<span class="token-number">500</span> * time.Millisecond),`,
 	`)`,
 	``,
-	`<span class="token-keyword">if</span> err := w.<span class="token-function">Start</span>(ctx); err != <span class="token-keyword">nil</span> {`,
+	`<span class="token-keyword">if</span> err := daemon.<span class="token-function">Start</span>(ctx); err != <span class="token-keyword">nil</span> {`,
 	`  <span class="token-keyword">return</span> err`,
 	`}`,
 ];
@@ -262,25 +265,25 @@ const workerCodeLines = [
 			</div>
 		</section>
 
-		<section class="section-band section-band--worker">
-			<div class="section quickstart-section quickstart-section--worker">
-				<div class="code-window" aria-label="Example worker usage">
+		<section class="section-band section-band--projector">
+			<div class="section quickstart-section quickstart-section--projector">
+				<div class="code-window" aria-label="Example projector usage">
 					<div class="code-window-header">
 						<div class="window-controls" aria-hidden="true">
 							<span></span>
 							<span></span>
 							<span></span>
 						</div>
-						<span class="code-file">worker.go</span>
+						<span class="code-file">main.go</span>
 					</div>
-					<pre><code>{workerCodeLines.map((line) => <span class="code-line" set:html={line} />)}</code></pre>
+					<pre><code>{projectorCodeLines.map((line) => <span class="code-line" set:html={line} />)}</code></pre>
 				</div>
 				<div class="quickstart-copy">
 					<div class="section-heading section-heading--compact">
-						<h2>eventsalsa/worker</h2>
+						<h2>eventsalsa/projector</h2>
 						<p>
-							<code>eventsalsa/worker</code> runs async consumers and projections across one or
-							more worker processes, with PostgreSQL-backed assignment and rebalancing.
+							<code>eventsalsa/projector</code> runs async projections across one or
+							more daemon instances, with PostgreSQL-backed assignment and rebalancing.
 						</p>
 					</div>
 					<div class="install-card">
@@ -288,20 +291,20 @@ const workerCodeLines = [
 							<span>Install</span>
 							<span class="material-symbols-outlined">terminal</span>
 						</div>
-						<code>go get github.com/eventsalsa/worker</code>
+						<code>go get github.com/eventsalsa/projector</code>
 					</div>
 					<ul class="proof-points">
 						<li>
 							<span class="material-symbols-outlined">check</span>
-							<span>Start with one worker process and add more when you want consumer assignments split out.</span>
+							<span>Start with one daemon instance and add more when you want projection assignments distributed.</span>
 						</li>
 						<li>
 							<span class="material-symbols-outlined">check</span>
-							<span>Keep coordination in PostgreSQL while the leader rebalances consumers across live workers.</span>
+							<span>Keep coordination in PostgreSQL while the leader rebalances projections across live instances.</span>
 						</li>
 						<li>
 							<span class="material-symbols-outlined">check</span>
-							<span>Build consumers on <code>eventsalsa/store/consumer</code> without introducing a separate broker first.</span>
+							<span>Filter stream types with <code>projector.FilterStreamTypes</code> without requiring a separate broker.</span>
 						</li>
 					</ul>
 				</div>
@@ -487,7 +490,7 @@ const workerCodeLines = [
 		background: var(--color-surface-low);
 	}
 
-	.section-band--worker {
+	.section-band--projector {
 		background: var(--color-background);
 	}
 
@@ -906,11 +909,11 @@ const workerCodeLines = [
 			gap: 2rem;
 		}
 
-		.quickstart-section--worker .code-window {
+		.quickstart-section--projector .code-window {
 			order: 1;
 		}
 
-		.quickstart-section--worker .quickstart-copy {
+		.quickstart-section--projector .quickstart-copy {
 			order: 2;
 		}
 	}
