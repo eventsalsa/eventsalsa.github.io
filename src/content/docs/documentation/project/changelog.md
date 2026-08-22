@@ -7,6 +7,11 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/store
 
+### v0.2.0
+
+- **Breaking Changes**:
+  - Removed `Consumer` and `ScopedConsumer` interfaces from the store package (`github.com/eventsalsa/store/consumer`).
+
 ### v0.1.0
 
 - **Breaking Changes**:
@@ -37,6 +42,19 @@ This page summarizes released versions of the current `eventsalsa` components. I
 - Initial release.
 
 ## eventsalsa/projector
+
+### v0.3.0
+
+- **Features**:
+  - Introduced pluggable runtime `Observer` interface (`OnBatchProcessed`, `OnHeartbeat`, `OnGapDetected`, `OnGapSkipped`, `OnRebalance`) for real-time telemetry, gap tracking, and Prometheus metrics emission without out-of-band database polling.
+  - Added telemetry data structures (`BatchStats`, `DaemonStats`, `GapStats`) and utility wrappers (`NoopObserver`, `MultiObserver`).
+
+### v0.2.0
+
+- **Features**:
+  - Introduced canonical `Projection` interface (`Name() string`, `Handle(ctx context.Context, tx pgx.Tx, event store.PersistedEvent) error`).
+  - Added dynamic projection stream and event filtering decorators (`FilterStreamTypes`, `FilterEventTypes`).
+  - Upgraded core dependency to `github.com/eventsalsa/store` v0.2.0.
 
 ### v0.1.0
 
