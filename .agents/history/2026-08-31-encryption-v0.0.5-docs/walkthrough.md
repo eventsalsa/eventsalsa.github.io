@@ -5,10 +5,12 @@ This pull request completely rewrites the `eventsalsa/encryption` documentation 
 ## Key Changes
 
 ### 1. Encryption Documentation Chapter (`src/content/docs/documentation/components/encryption.md`)
+- **2D Architecture Diagram**: Added a modern dark-theme vector diagram (`src/assets/encryption-architecture.jpg`) illustrating the two-tier key hierarchy and component relationships between `postgres.Store`, PostgreSQL, `envelope.Envelope`, `systemkey.Keyring`, and `cipher.Cipher`.
+- **Idiomatic `eventsalsa/store` Integration**: Showcased atomic transaction integration where DEK creation/retrieval and event stream persistence execute within the same `pgx.Tx` via `eventsalsa/store.EventStore.Append`.
 - **Decoupled In-Memory Engine**: Documented the pure in-memory `envelope.Envelope` cryptographic engine (`envelope.New(keyring, cipher)`), emphasizing zero database, context, or network dependencies during encryption and decryption.
-- **Stateless PostgreSQL Keystore**: Documented `postgres.Store` (`postgres.NewStore(env, cfg)`), highlighting explicit connection passing (`*pgxpool.Pool`, `pgx.Tx`, `*pgx.Conn`) and seamless SQL transaction participation.
+- **Stateless PostgreSQL Keystore**: Documented `postgres.Store` (`postgres.NewStore(env, cfg)`), highlighting explicit connection passing (`*pgxpool.Pool`, `pgx.Tx`, `*pgx.Conn`).
 - **Unified DEK Lifecycle**: Replaced legacy `pii`, `secret`, and `keymanager` package workflows with direct `postgres.Store` lifecycle methods (`CreateKey`, `RotateKey`, `GetActiveKey`, `GetKey`, `RevokeKeys`, `DestroyKeys`, `ActiveKeyVersion`).
-- **GDPR Crypto-Shredding (Article 17)**: Documented hard-deletion via `store.DestroyKeys` to render historical immutable event payloads permanently and mathematically undecryptable without violating event store immutability.
+- **GDPR Crypto-Shredding (Article 17)**: Documented hard-deletion via `store.DestroyKeys` combined with `store.Append(ctx, tx, store.Exact(...), ...)` to record lifecycle events while rendering historical immutable payloads permanently and mathematically undecryptable.
 - **Secret Rotation & Historical Retention**: Documented versioned key rotation via `store.RotateKey` with soft revocation and historical payload decryption via `store.GetKey`.
 - **System Key (KEK) Rewrap**: Documented the standalone administrative utility `postgres.RewrapSystemKeys` for in-place re-encryption of DEKs across system keys in batches with dry-run support.
 - **Deterministic Blind Indexing**: Documented HMAC-SHA256 blind indexing via `hash.HMACHasher` for database uniqueness constraints, lookups, and deterministic ID derivation.
@@ -22,4 +24,4 @@ This pull request completely rewrites the `eventsalsa/encryption` documentation 
 ## Verification Results
 
 ### Automated Validation
-- Executed `npm run build` locally; Astro and Starlight built all 8 static routes and generated search indexes successfully with 0 errors or warnings.
+- Executed `npm run build` locally; Astro and Starlight built all 8 static routes, optimized image assets (`/_astro/encryption-architecture.*.webp`), and generated search indexes successfully with 0 errors or warnings.

@@ -20,21 +20,7 @@ Envelope encryption protects application data using a two-tier key hierarchy:
 1. **System Keys (KEKs — Key Encrypting Keys)**: Long-lived master keys managed in memory or loaded from secret stores (such as HashiCorp Vault, AWS KMS, or local secret mounts). System keys protect Data Encryption Keys.
 2. **Data Encryption Keys (DEKs — Scope Keys)**: Ephemeral symmetric keys generated per `(scope, scopeID)` namespace (e.g., `("user_pii", "user-123")` or `("integration", "stripe-token")`). DEKs protect application payloads and are stored encrypted in PostgreSQL.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Application                          │
-│                                                             │
-│         postgres.Store              envelope.Envelope       │
-│          │          │                │             │        │
-│          │          ▼                │             │        │
-│          │     PostgreSQL            ▼             ▼        │
-│          │   (pgx.Tx / Pool)     systemkey      cipher      │
-│          │                       .Keyring      .Cipher      │
-│          └───────────────────────────┐                      │
-│                                      ▼                      │
-│                                 AES-256-GCM                 │
-└─────────────────────────────────────────────────────────────┘
-```
+![eventsalsa/encryption Architecture](../../../../assets/encryption-architecture.jpg)
 
 The runtime flow is split cleanly between key management and cryptographic transformations:
 
@@ -261,16 +247,32 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/encryption"
 	"github.com/eventsalsa/encryption/envelope"
-	"github.com/eventsalsa/encryption/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
+	encpostgres "github.com/eventsalsa/encryption/postgres"
+	"github.com/eventsalsa/store"
 )
 
-func RegisterUser(ctx context.Context, pool *pgxpool.Pool, env *envelope.Envelope, store *postgres.Store, userID, email string) error {
+type UserRegisteredPayload struct {
+	Email string `json:"email"`
+}
+
+func RegisterUser(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	env *envelope.Envelope,
+	keyStore *encpostgres.Store,
+	eventStore store.EventStore,
+	userID, email string,
+) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -280,12 +282,12 @@ func RegisterUser(ctx context.Context, pool *pgxpool.Pool, env *envelope.Envelop
 	scope := "user_pii"
 
 	// 1. Key creation runs inside the transaction
-	key, err := store.GetActiveKey(ctx, tx, scope, userID)
+	key, err := keyStore.GetActiveKey(ctx, tx, scope, userID)
 	if errors.Is(err, encryption.ErrKeyNotFound) {
-		if _, err := store.CreateKey(ctx, tx, scope, userID); err != nil {
+		if _, err := keyStore.CreateKey(ctx, tx, scope, userID); err != nil {
 			return fmt.Errorf("create key: %w", err)
 		}
-		key, err = store.GetActiveKey(ctx, tx, scope, userID)
+		key, err = keyStore.GetActiveKey(ctx, tx, scope, userID)
 	}
 	if err != nil {
 		return fmt.Errorf("resolve active key: %w", err)
@@ -297,13 +299,25 @@ func RegisterUser(ctx context.Context, pool *pgxpool.Pool, env *envelope.Envelop
 		return fmt.Errorf("encrypt email: %w", err)
 	}
 
-	// 3. Persist the event in the same transaction
-	_, err = tx.Exec(ctx, `
-		INSERT INTO events (stream_type, stream_id, event_type, payload)
-		VALUES ($1, $2, $3, $4)
-	`, "User", userID, "UserRegistered", encryptedEmail)
+	payload, err := json.Marshal(UserRegisteredPayload{Email: encryptedEmail})
 	if err != nil {
-		return fmt.Errorf("insert event: %w", err)
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	// 3. Append the event to eventsalsa/store in the exact same transaction
+	event := store.Event{
+		StreamType:   "User",
+		StreamID:     userID,
+		EventID:      uuid.New(),
+		EventType:    "UserRegistered",
+		EventVersion: 1,
+		Payload:      payload,
+		Metadata:     []byte(`{}`),
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	if _, err := eventStore.Append(ctx, tx, store.NoStream(), []store.Event{event}); err != nil {
+		return fmt.Errorf("append event to store: %w", err)
 	}
 
 	return tx.Commit(ctx)
@@ -363,7 +377,7 @@ func (u *User) ClearUncommittedEvents()   { u.uncommitted = nil }
 
 ### Coordinate encryption in application services
 
-The application service coordinates key lifecycle, in-memory encryption, aggregate execution, and repository persistence:
+The application service coordinates key lifecycle, in-memory encryption, aggregate creation, and repository persistence:
 
 ```go
 package app
@@ -379,44 +393,59 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+type UserRepository interface {
+	Save(ctx context.Context, tx pgx.Tx, aggregate *user.User) error
+}
+
 type RegistrationService struct {
+	users  UserRepository
 	env    *envelope.Envelope
 	store  *postgres.Store
 	hasher hash.Hasher
 }
 
-func NewRegistrationService(env *envelope.Envelope, store *postgres.Store, hasher hash.Hasher) *RegistrationService {
-	return &RegistrationService{env: env, store: store, hasher: hasher}
+func NewRegistrationService(
+	users UserRepository,
+	env *envelope.Envelope,
+	store *postgres.Store,
+	hasher hash.Hasher,
+) *RegistrationService {
+	return &RegistrationService{
+		users:  users,
+		env:    env,
+		store:  store,
+		hasher: hasher,
+	}
 }
 
-func (s *RegistrationService) Register(ctx context.Context, tx pgx.Tx, userID, email, name string) (*user.User, error) {
+func (s *RegistrationService) Register(ctx context.Context, tx pgx.Tx, userID, email, name string) error {
 	scope := "user_pii"
 
-	// 1. Ensure key exists
+	// 1. Ensure the user's DEK exists in PostgreSQL
 	if _, err := s.store.CreateKey(ctx, tx, scope, userID); err != nil {
-		return nil, fmt.Errorf("create user dek: %w", err)
+		return fmt.Errorf("create user dek: %w", err)
 	}
 
 	key, err := s.store.GetActiveKey(ctx, tx, scope, userID)
 	if err != nil {
-		return nil, fmt.Errorf("get active dek: %w", err)
+		return fmt.Errorf("get active dek: %w", err)
 	}
 
-	// 2. Encrypt sensitive fields
+	// 2. Encrypt sensitive fields in RAM
 	encEmail, err := s.env.Encrypt(key.SystemKeyID, key.EncryptedDEK, email)
 	if err != nil {
-		return nil, fmt.Errorf("encrypt email: %w", err)
+		return fmt.Errorf("encrypt email: %w", err)
 	}
 
 	encName, err := s.env.Encrypt(key.SystemKeyID, key.EncryptedDEK, name)
 	if err != nil {
-		return nil, fmt.Errorf("encrypt name: %w", err)
+		return fmt.Errorf("encrypt name: %w", err)
 	}
 
 	// 3. Compute deterministic blind index for lookups
 	emailHash := s.hasher.Hash(email)
 
-	// 4. Construct domain aggregate
+	// 4. Instantiate domain aggregate with encrypted value objects
 	aggregate := user.Register(
 		userID,
 		user.EncryptedEmail(encEmail),
@@ -424,7 +453,68 @@ func (s *RegistrationService) Register(ctx context.Context, tx pgx.Tx, userID, e
 		emailHash,
 	)
 
-	return aggregate, nil
+	// 5. Persist aggregate uncommitted events to eventsalsa/store
+	return s.users.Save(ctx, tx, aggregate)
+}
+```
+
+### Persist domain events with `eventsalsa/store`
+
+The repository adapter transforms uncommitted domain events into `store.Event` envelopes and appends them to `eventsalsa/store` inside the active transaction:
+
+```go
+package persistence
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/acme/shop/internal/domain/user"
+	"github.com/eventsalsa/store"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+type PostgresUserRepository struct {
+	eventStore store.EventStore
+}
+
+func NewPostgresUserRepository(eventStore store.EventStore) *PostgresUserRepository {
+	return &PostgresUserRepository{eventStore: eventStore}
+}
+
+func (r *PostgresUserRepository) Save(ctx context.Context, tx pgx.Tx, u *user.User) error {
+	events := make([]store.Event, 0, len(u.UncommittedEvents()))
+
+	for _, uncommitted := range u.UncommittedEvents() {
+		switch evt := uncommitted.(type) {
+		case user.UserRegistered:
+			payload, err := json.Marshal(evt)
+			if err != nil {
+				return fmt.Errorf("marshal UserRegistered: %w", err)
+			}
+
+			events = append(events, store.Event{
+				StreamType:   "User",
+				StreamID:     evt.UserID,
+				EventID:      uuid.New(),
+				EventType:    "UserRegistered",
+				EventVersion: 1,
+				Payload:      payload,
+				Metadata:     []byte(`{}`),
+				CreatedAt:    time.Now().UTC(),
+			})
+		}
+	}
+
+	if _, err := r.eventStore.Append(ctx, tx, store.NoStream(), events); err != nil {
+		return fmt.Errorf("append to event store: %w", err)
+	}
+
+	u.ClearUncommittedEvents()
+	return nil
 }
 ```
 
@@ -553,29 +643,47 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eventsalsa/encryption/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/eventsalsa/store"
 )
 
-func HandleErasureRequest(ctx context.Context, pool *pgxpool.Pool, store *postgres.Store, userID string) error {
+func HandleErasureRequest(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	keyStore *postgres.Store,
+	eventStore store.EventStore,
+	userID string,
+	currentStreamVersion int64,
+) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Permanently delete the DEK from PostgreSQL
-	if err := store.DestroyKeys(ctx, tx, "user_pii", userID); err != nil {
+	// 1. Permanently delete the DEK from PostgreSQL (crypto-shredding)
+	if err := keyStore.DestroyKeys(ctx, tx, "user_pii", userID); err != nil {
 		return fmt.Errorf("destroy pii keys: %w", err)
 	}
 
-	// 2. Append UserDeleted event to mark domain completion
-	_, err = tx.Exec(ctx, `
-		INSERT INTO events (stream_type, stream_id, event_type, payload)
-		VALUES ($1, $2, $3, $4)
-	`, "User", userID, "UserDeleted", "{}")
-	if err != nil {
+	// 2. Append UserDeleted event to eventsalsa/store to record the domain fact
+	deleteEvent := store.Event{
+		StreamType:   "User",
+		StreamID:     userID,
+		EventID:      uuid.New(),
+		EventType:    "UserDeleted",
+		EventVersion: 1,
+		Payload:      []byte(`{}`),
+		Metadata:     []byte(`{}`),
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	if _, err := eventStore.Append(ctx, tx, store.Exact(currentStreamVersion), []store.Event{deleteEvent}); err != nil {
 		return fmt.Errorf("append delete event: %w", err)
 	}
 
