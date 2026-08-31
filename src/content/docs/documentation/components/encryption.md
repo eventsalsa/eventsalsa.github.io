@@ -20,7 +20,7 @@ Envelope encryption protects application data using a two-tier key hierarchy:
 1. **System Keys (KEKs — Key Encrypting Keys)**: Long-lived master keys managed in memory or loaded from secret stores (such as HashiCorp Vault, AWS KMS, or local secret mounts). System keys protect Data Encryption Keys.
 2. **Data Encryption Keys (DEKs — Scope Keys)**: Ephemeral symmetric keys generated per `(scope, scopeID)` namespace (e.g., `("user_pii", "user-123")` or `("integration", "stripe-token")`). DEKs protect application payloads and are stored encrypted in PostgreSQL.
 
-![eventsalsa/encryption Architecture](../../../../assets/encryption-architecture.jpg)
+![eventsalsa/encryption Architecture](../../../../assets/encryption-architecture.svg)
 
 The runtime flow is split cleanly between key management and cryptographic transformations:
 
