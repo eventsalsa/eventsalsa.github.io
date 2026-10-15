@@ -43,6 +43,20 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/projector
 
+### v0.5.0
+
+- **Breaking Changes**:
+  - `projector.New(db, eventStore, registry, opts...)` now accepts a `*projector.Registry` (built with `projector.NewRegistry()` or `projector.FromProjections(...)`) instead of a `[]projector.Projection` slice.
+  - Added `OnProjectionDegraded(ctx, DegradedStats)` and `OnPoisonBatchSkipped(ctx, PoisonBatchStats)` methods to the `Observer` interface (`NoopObserver` provides default no-op implementations).
+- **Features**:
+  - Added support for four projection handler shapes: transactional per-event (`Projection`), transactional batch (`BatchProjection`), detached per-event (`DetachedProjection`), and detached batch (`DetachedBatchProjection`), inferred automatically by `Registry.Add` and `FromProjections`.
+  - Added registration-time stream and event type filters (`OnStreamTypes`, `OnEventTypes`) applicable to all four projection shapes.
+  - Added detached phase timeout budgets (`WithDetachedApplyTimeout`, `WithCheckpointTimeout`) so external network I/O never holds PostgreSQL connections or starves post-apply checkpoint writes.
+  - Added explicit error classification (`failure.Retryable`, `failure.Permanent`), per-projection failure policies (`FailurePolicyFailFast`, `FailurePolicyRetry`, `WithFailurePolicy`), and dead-letter poison batch handlers (`WithPoisonHandler`).
+- **Bug Fixes**:
+  - Fixed a race condition on the dedicated leader connection during forced daemon shutdown.
+  - Isolated the post-apply detached checkpoint transaction into its own timeout budget (`WithCheckpointTimeout`).
+
 ### v0.4.0
 
 - **Features**:
