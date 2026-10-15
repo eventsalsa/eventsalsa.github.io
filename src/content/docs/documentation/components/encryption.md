@@ -666,13 +666,24 @@ func (r *PostgresUserRepository) Save(ctx context.Context, tx pgx.Tx, u *user.Us
 
 Encrypted payloads in the event store are not directly queryable. In event sourcing, you build read models (projections) optimized for specific query patterns.
 
-When projecting events containing encrypted fields, fetch the DEK, open a session to decrypt the fields in memory, and upsert the cleartext values into the read model table:
+:::caution
+Avoid projecting decrypted plaintext into read model tables unless strictly necessary. Persisting cleartext PII or secrets in read models bypasses encryption at rest in database snapshots, replicas, and ad-hoc queries, and means deleting a DEK (`DestroyKeys`) no longer erases the data on its own.
+
+Instead, follow two rules when designing read models for sensitive data:
+1. **For retrieval**: Store the **ciphertext** and **`key_version`** in the read model table during projection, and decrypt in memory on the read path after querying the row.
+2. **For filtering and lookups**: Store a **keyed HMAC blind index** (`hash.HMACHasher`, which computes a two-pass keyed HMAC-SHA256 digest using a dedicated secret key) and **always prefer exact-match lookups** (`WHERE email_hash = $1`) over substring, prefix, or full-text term search. Partial or token-based search indexes leak character-distribution and frequency patterns across sensitive values.
+:::
+
+### Projecting ciphertext, key version, and blind indexes
+
+Store the encrypted fields alongside their `key_version` and exact-match blind index (`email_hash`) in the read model table:
 
 ```sql
 CREATE TABLE read_model.user_directory_v1 (
     user_id TEXT PRIMARY KEY,
-    email TEXT NOT NULL,
-    full_name TEXT NOT NULL,
+    encrypted_email TEXT NOT NULL,
+    encrypted_full_name TEXT NOT NULL,
+    key_version INT NOT NULL,
     email_hash TEXT NOT NULL UNIQUE,
     last_global_position BIGINT NOT NULL DEFAULT 0
 );
@@ -681,7 +692,7 @@ CREATE INDEX idx_user_directory_v1_email_hash
     ON read_model.user_directory_v1 (email_hash);
 ```
 
-The projection handler decrypts the event fields and updates the read model idempotently:
+During projection, persist the ciphertext and `key_version` directly without decrypting, and decrypt on the read path only when serving a query:
 
 ```go
 package projections
@@ -695,23 +706,24 @@ import (
 	"github.com/eventsalsa/encryption/postgres"
 	"github.com/eventsalsa/store"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type UserRegisteredPayload struct {
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
-	FullName  string `json:"full_name"`
-	EmailHash string `json:"email_hash"`
+	UserID     string `json:"user_id"`
+	Email      string `json:"email"`
+	FullName   string `json:"full_name"`
+	KeyVersion int    `json:"key_version"`
+	EmailHash  string `json:"email_hash"`
 }
 
-type UserDirectoryProjection struct {
-	env   *envelope.Envelope
-	store *postgres.Store
+type UserView struct {
+	UserID   string
+	Email    string
+	FullName string
 }
 
-func NewUserDirectoryProjection(env *envelope.Envelope, store *postgres.Store) *UserDirectoryProjection {
-	return &UserDirectoryProjection{env: env, store: store}
-}
+type UserDirectoryProjection struct{}
 
 func (p *UserDirectoryProjection) Name() string {
 	return "user_directory_v1"
@@ -725,42 +737,19 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 			return fmt.Errorf("unmarshal event payload: %w", err)
 		}
 
-		// 1. Fetch DEK
-		key, err := p.store.GetActiveKey(ctx, tx, "user_pii", payload.UserID)
-		if err != nil {
-			return fmt.Errorf("fetch dek: %w", err)
-		}
-
-		// 2. Open session and decrypt fields in-memory
-		sess, err := p.env.OpenSession(ctx, key)
-		if err != nil {
-			return fmt.Errorf("open session: %w", err)
-		}
-		defer sess.Close()
-
-		email, err := sess.DecryptString(payload.Email, nil)
-		if err != nil {
-			return fmt.Errorf("decrypt email: %w", err)
-		}
-
-		name, err := sess.DecryptString(payload.FullName, nil)
-		if err != nil {
-			return fmt.Errorf("decrypt name: %w", err)
-		}
-
-		// 3. Upsert into read model with position guard
-		_, err = tx.Exec(ctx, `
+		_, err := tx.Exec(ctx, `
 			INSERT INTO read_model.user_directory_v1 (
-				user_id, email, full_name, email_hash, last_global_position
+				user_id, encrypted_email, encrypted_full_name, key_version, email_hash, last_global_position
 			)
-			VALUES ($1, $2, $3, $4, $5)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (user_id) DO UPDATE
-			SET email = EXCLUDED.email,
-			    full_name = EXCLUDED.full_name,
+			SET encrypted_email = EXCLUDED.encrypted_email,
+			    encrypted_full_name = EXCLUDED.encrypted_full_name,
+			    key_version = EXCLUDED.key_version,
 			    email_hash = EXCLUDED.email_hash,
 			    last_global_position = EXCLUDED.last_global_position
 			WHERE read_model.user_directory_v1.last_global_position < EXCLUDED.last_global_position
-		`, payload.UserID, email, name, payload.EmailHash, event.GlobalPosition)
+		`, payload.UserID, payload.Email, payload.FullName, payload.KeyVersion, payload.EmailHash, event.GlobalPosition)
 		return err
 
 	case "UserDeleted":
@@ -772,6 +761,56 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 	}
 
 	return nil
+}
+
+// FindUserByEmailHash queries by exact-match blind index and decrypts after read.
+func FindUserByEmailHash(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	keyStore *postgres.Store,
+	env *envelope.Envelope,
+	emailHash string,
+) (*UserView, error) {
+	var (
+		userID        string
+		encEmail      string
+		encFullName   string
+		keyVersion    int
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT user_id, encrypted_email, encrypted_full_name, key_version
+		FROM read_model.user_directory_v1
+		WHERE email_hash = $1
+	`, emailHash).Scan(&userID, &encEmail, &encFullName, &keyVersion)
+	if err != nil {
+		return nil, fmt.Errorf("query user by blind index: %w", err)
+	}
+
+	key, err := keyStore.GetKey(ctx, pool, "user_pii", userID, keyVersion)
+	if err != nil {
+		return nil, fmt.Errorf("fetch dek v%d: %w", keyVersion, err)
+	}
+
+	sess, err := env.OpenSession(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("open session: %w", err)
+	}
+	defer sess.Close()
+
+	email, err := sess.DecryptString(encEmail, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt email: %w", err)
+	}
+	fullName, err := sess.DecryptString(encFullName, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt full name: %w", err)
+	}
+
+	return &UserView{
+		UserID:   userID,
+		Email:    email,
+		FullName: fullName,
+	}, nil
 }
 ```
 
