@@ -91,6 +91,15 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/encryption
 
+### v0.0.5
+
+- **Breaking Changes**:
+  - Decoupled envelope encryption into a pure in-memory cryptographic engine (`envelope.Envelope`) with zero database or context dependencies.
+  - Refactored `postgres.Store` into a stateless key store where all operations accept an explicit `pgx` connection (`*pgxpool.Pool`, `pgx.Tx`, `*pgx.Conn`), eliminating stateful context cloning and `keystore.WithTx`.
+  - Consolidated DEK lifecycle management directly into `postgres.Store` (`CreateKey`, `RotateKey`, `GetActiveKey`, `GetKey`, `RevokeKeys`, `DestroyKeys`, `ActiveKeyVersion`).
+  - Converted `RewrapSystemKeys` into a standalone administrative function in `postgres`.
+  - Removed domain adapter packages (`pii`, `secret`, `keymanager`, `encerr`) and `encryption.Module` in favor of direct envelope primitives, clean component injection, and root sentinel errors.
+
 ### v0.0.4
 
 - Migrated PostgreSQL keystore implementation and transactional propagation helpers (`keystore.WithTx`) to native `pgx/v5`, removing dependencies on `database/sql`.
