@@ -368,12 +368,12 @@ if err != nil {
 }
 defer sess.Close()
 
-encEmail, err := sess.EncryptString("alice@example.com", nil)
+emailCiphertext, err := sess.EncryptString("alice@example.com", nil)
 if err != nil {
 	return err
 }
 
-encPhone, err := sess.EncryptString("+1-555-0100", nil)
+phoneCiphertext, err := sess.EncryptString("+1-555-0100", nil)
 if err != nil {
 	return err
 }
@@ -407,7 +407,7 @@ import (
 )
 
 type UserRegisteredPayload struct {
-	Email string `json:"email"`
+	EmailCiphertext string `json:"email_ciphertext"`
 }
 
 func RegisterUser(
@@ -436,12 +436,12 @@ func RegisterUser(
 	}
 
 	// 2. Encrypt payload using the scoped DEK
-	encryptedEmail, err := env.EncryptString(ctx, key, email, nil)
+	emailCiphertext, err := env.EncryptString(ctx, key, email, nil)
 	if err != nil {
 		return fmt.Errorf("encrypt email: %w", err)
 	}
 
-	payload, err := json.Marshal(UserRegisteredPayload{Email: encryptedEmail})
+	payload, err := json.Marshal(UserRegisteredPayload{EmailCiphertext: emailCiphertext})
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
@@ -483,10 +483,10 @@ type EncryptedEmail string
 type EncryptedFullName string
 
 type UserRegistered struct {
-	UserID    string
-	Email     EncryptedEmail
-	FullName  EncryptedFullName
-	EmailHash string
+	UserID             string
+	EmailCiphertext    EncryptedEmail
+	FullNameCiphertext EncryptedFullName
+	EmailBidx          string
 }
 
 type UserDeleted struct {
@@ -498,13 +498,13 @@ type User struct {
 	uncommitted []any
 }
 
-func Register(userID string, email EncryptedEmail, name EncryptedFullName, emailHash string) *User {
+func Register(userID string, emailCiphertext EncryptedEmail, fullNameCiphertext EncryptedFullName, emailBidx string) *User {
 	u := &User{id: userID}
 	u.uncommitted = append(u.uncommitted, UserRegistered{
-		UserID:    userID,
-		Email:     email,
-		FullName:  name,
-		EmailHash: emailHash,
+		UserID:             userID,
+		EmailCiphertext:    emailCiphertext,
+		FullNameCiphertext: fullNameCiphertext,
+		EmailBidx:          emailBidx,
 	})
 	return u
 }
@@ -576,25 +576,25 @@ func (s *RegistrationService) Register(ctx context.Context, tx pgx.Tx, userID, e
 	}
 	defer sess.Close()
 
-	encEmail, err := sess.EncryptString(email, nil)
+	emailCiphertext, err := sess.EncryptString(email, nil)
 	if err != nil {
 		return fmt.Errorf("encrypt email: %w", err)
 	}
 
-	encName, err := sess.EncryptString(name, nil)
+	nameCiphertext, err := sess.EncryptString(name, nil)
 	if err != nil {
 		return fmt.Errorf("encrypt name: %w", err)
 	}
 
 	// 3. Compute deterministic blind index for lookups
-	emailHash := s.hasher.Hash(email)
+	emailBidx := s.hasher.Hash(email)
 
 	// 4. Instantiate domain aggregate with encrypted value objects
 	aggregate := user.Register(
 		userID,
-		user.EncryptedEmail(encEmail),
-		user.EncryptedFullName(encName),
-		emailHash,
+		user.EncryptedEmail(emailCiphertext),
+		user.EncryptedFullName(nameCiphertext),
+		emailBidx,
 	)
 
 	// 5. Persist aggregate uncommitted events to eventsalsa/store
@@ -671,25 +671,25 @@ Avoid projecting decrypted plaintext into read model tables unless strictly nece
 
 Instead, follow two rules when designing read models for sensitive data:
 1. **For retrieval**: Store the **ciphertext** and **`key_version`** in the read model table during projection, and decrypt in memory on the read path after querying the row.
-2. **For filtering and lookups**: Store a **keyed HMAC blind index** (`hash.HMACHasher`, which computes a two-pass keyed HMAC-SHA256 digest using a dedicated secret key) and **always prefer exact-match lookups** (`WHERE email_hash = $1`) over substring, prefix, or full-text term search. Partial or token-based search indexes leak character-distribution and frequency patterns across sensitive values.
+2. **For filtering and lookups**: Store a **keyed HMAC blind index** (`hash.HMACHasher`, which computes a two-pass keyed HMAC-SHA256 digest using a dedicated secret key) and **always prefer exact-match lookups** (`WHERE email_bidx = $1`) over substring, prefix, or full-text term search. Partial or token-based search indexes leak character-distribution and frequency patterns across sensitive values.
 :::
 
 ### Projecting ciphertext, key version, and blind indexes
 
-Store the encrypted fields alongside their `key_version` and exact-match blind index (`email_hash`) in the read model table:
+Store the encrypted fields alongside their `key_version` and exact-match blind index (`email_bidx`) in the read model table:
 
 ```sql
 CREATE TABLE read_model.user_directory_v1 (
     user_id TEXT PRIMARY KEY,
-    encrypted_email TEXT NOT NULL,
-    encrypted_full_name TEXT NOT NULL,
+    email_ciphertext TEXT NOT NULL,
+    full_name_ciphertext TEXT NOT NULL,
     key_version INT NOT NULL,
-    email_hash TEXT NOT NULL UNIQUE,
+    email_bidx TEXT NOT NULL UNIQUE,
     last_global_position BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_user_directory_v1_email_hash
-    ON read_model.user_directory_v1 (email_hash);
+CREATE INDEX idx_user_directory_v1_email_bidx
+    ON read_model.user_directory_v1 (email_bidx);
 ```
 
 During projection, persist the ciphertext and `key_version` directly without decrypting, and decrypt on the read path only when serving a query:
@@ -710,11 +710,11 @@ import (
 )
 
 type UserRegisteredPayload struct {
-	UserID     string `json:"user_id"`
-	Email      string `json:"email"`
-	FullName   string `json:"full_name"`
-	KeyVersion int    `json:"key_version"`
-	EmailHash  string `json:"email_hash"`
+	UserID             string `json:"user_id"`
+	EmailCiphertext    string `json:"email_ciphertext"`
+	FullNameCiphertext string `json:"full_name_ciphertext"`
+	KeyVersion         int    `json:"key_version"`
+	EmailBidx          string `json:"email_bidx"`
 }
 
 type UserView struct {
@@ -739,17 +739,17 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 
 		_, err := tx.Exec(ctx, `
 			INSERT INTO read_model.user_directory_v1 (
-				user_id, encrypted_email, encrypted_full_name, key_version, email_hash, last_global_position
+				user_id, email_ciphertext, full_name_ciphertext, key_version, email_bidx, last_global_position
 			)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (user_id) DO UPDATE
-			SET encrypted_email = EXCLUDED.encrypted_email,
-			    encrypted_full_name = EXCLUDED.encrypted_full_name,
+			SET email_ciphertext = EXCLUDED.email_ciphertext,
+			    full_name_ciphertext = EXCLUDED.full_name_ciphertext,
 			    key_version = EXCLUDED.key_version,
-			    email_hash = EXCLUDED.email_hash,
+			    email_bidx = EXCLUDED.email_bidx,
 			    last_global_position = EXCLUDED.last_global_position
 			WHERE read_model.user_directory_v1.last_global_position < EXCLUDED.last_global_position
-		`, payload.UserID, payload.Email, payload.FullName, payload.KeyVersion, payload.EmailHash, event.GlobalPosition)
+		`, payload.UserID, payload.EmailCiphertext, payload.FullNameCiphertext, payload.KeyVersion, payload.EmailBidx, event.GlobalPosition)
 		return err
 
 	case "UserDeleted":
@@ -763,25 +763,25 @@ func (p *UserDirectoryProjection) Handle(ctx context.Context, tx pgx.Tx, event s
 	return nil
 }
 
-// FindUserByEmailHash queries by exact-match blind index and decrypts after read.
-func FindUserByEmailHash(
+// FindUserByEmailBidx queries by exact-match blind index and decrypts after read.
+func FindUserByEmailBidx(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	keyStore *postgres.Store,
 	env *envelope.Envelope,
-	emailHash string,
+	emailBidx string,
 ) (*UserView, error) {
 	var (
-		userID        string
-		encEmail      string
-		encFullName   string
-		keyVersion    int
+		userID             string
+		emailCiphertext    string
+		fullNameCiphertext string
+		keyVersion         int
 	)
 	err := pool.QueryRow(ctx, `
-		SELECT user_id, encrypted_email, encrypted_full_name, key_version
+		SELECT user_id, email_ciphertext, full_name_ciphertext, key_version
 		FROM read_model.user_directory_v1
-		WHERE email_hash = $1
-	`, emailHash).Scan(&userID, &encEmail, &encFullName, &keyVersion)
+		WHERE email_bidx = $1
+	`, emailBidx).Scan(&userID, &emailCiphertext, &fullNameCiphertext, &keyVersion)
 	if err != nil {
 		return nil, fmt.Errorf("query user by blind index: %w", err)
 	}
@@ -797,11 +797,11 @@ func FindUserByEmailHash(
 	}
 	defer sess.Close()
 
-	email, err := sess.DecryptString(encEmail, nil)
+	email, err := sess.DecryptString(emailCiphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt email: %w", err)
 	}
-	fullName, err := sess.DecryptString(encFullName, nil)
+	fullName, err := sess.DecryptString(fullNameCiphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt full name: %w", err)
 	}
@@ -1045,8 +1045,8 @@ func main() {
 }
 ```
 
-Use deterministic hashes for:
-- Enforcing uniqueness constraints in database tables (e.g., `email_hash TEXT UNIQUE`).
+Use deterministic blind indexes for:
+- Enforcing uniqueness constraints in database tables (e.g., `email_bidx TEXT UNIQUE`).
 - Locating records by sensitive identifiers without storing plaintext.
 - Generating deterministic stream IDs from sensitive keys.
 
