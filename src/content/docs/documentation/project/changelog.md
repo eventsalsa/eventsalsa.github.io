@@ -91,6 +91,18 @@ This page summarizes released versions of the current `eventsalsa` components. I
 
 ## eventsalsa/encryption
 
+### v0.0.6
+
+- **Breaking Changes**:
+  - Replaced `systemkey` with the behavior-based `kek` package (`kek.Wrapper`, `kek.Rewrapper`, `kek.Keyring`) and `kek/local` (`NewWrapper`, `NewKeyringFromMap`, `NewKeyringFromFiles`) so Key Encryption Keys never cross interface boundaries as raw byte slices.
+  - Upgraded `cipher.Cipher`, `cipher/aesgcm`, and `envelope.Envelope` to bytes-first AEAD with Additional Authenticated Data (`aad []byte`) support and mandatory `KeyScope.AAD()` binding on all wrapped DEKs.
+  - Updated `(*postgres.Store).CreateKey` and `(*postgres.Store).RotateKey` to return `(*encryption.EncryptedKey, error)` directly via PostgreSQL `RETURNING`, and renamed `postgres.RewrapSystemKeys` to `postgres.RewrapKeys`.
+  - Refactored the PostgreSQL keystore schema (`001_encryption_keys.sql`) to rename `encrypted_key` → `encrypted_dek` and `system_key_id` → `kek_id`, enforce the single-active-key invariant via a partial unique index, and optimize the composite `kek_id` rewrap index.
+- **Features**:
+  - Added isolated Go sub-modules for Cloud KMS KEK providers: **AWS KMS** (`github.com/eventsalsa/encryption/kek/awskms`, with server-side `kms:ReEncrypt` support and configurable `WithContextKey`) and **Google Cloud KMS** (`github.com/eventsalsa/encryption/kek/gcpkms`, with end-to-end Castagnoli CRC32C integrity verification).
+  - Introduced `envelope.Session` (`env.OpenSession(ctx, key)`) to unwrap a DEK once and perform multiple in-memory AEAD operations without repeated KMS calls.
+  - Added `kek.CachingKeyring`, a concurrency-safe bounded TTL + LRU DEK cache decorator that automatically zeroes cached DEKs on expiration, eviction, invalidation, or close.
+
 ### v0.0.5
 
 - **Breaking Changes**:
